@@ -11,6 +11,8 @@ the bottom talks to the Mac webcam and the real cursor.
 """
 import math
 import time
+from pathlib import Path
+from urllib.request import urlretrieve
 from dataclasses import dataclass
 
 
@@ -211,7 +213,17 @@ class CursorController:
 def run_demo():
     import cv2
     import mediapipe as mp
+    from mediapipe.tasks.python import vision
+    from mediapipe.tasks.python.core.base_options import BaseOptions
     import pyautogui
+
+    model_path = Path(__file__).with_name("hand_landmarker.task")
+    if not model_path.exists():
+        urlretrieve(
+            "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+            "hand_landmarker/float16/1/hand_landmarker.task",
+            model_path,
+        )
 
     pyautogui.FAILSAFE = True    # slam the mouse into a screen corner = emergency stop
     pyautogui.PAUSE = 0
@@ -221,16 +233,25 @@ def run_demo():
     cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)    # long range: higher resolution keeps the hand clear
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    hands = mp.solutions.hands.Hands(
-        max_num_hands=1, model_complexity=1,
-        min_detection_confidence=0.5, min_tracking_confidence=0.5)
+    hands = vision.HandLandmarker.create_from_options(vision.HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=str(model_path)),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=1,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    ))
+    timestamp_ms = 0
 
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        res = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        lm = res.multi_hand_landmarks[0].landmark if res.multi_hand_landmarks else None
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        res = hands.detect_for_video(image, timestamp_ms)
+        timestamp_ms += 1
+        lm = res.hand_landmarks[0] if res.hand_landmarks else None
         out = ctrl.update(lm)
         if out.pointing and lm:
             pyautogui.moveTo(out.x, out.y, _pause=False)
@@ -241,6 +262,7 @@ def run_demo():
         cv2.imshow("debug", frame)
         if cv2.waitKey(1) & 0xFF == 27:        # Esc to quit
             break
+    hands.close()
     cap.release()
     cv2.destroyAllWindows()
 
