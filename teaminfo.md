@@ -69,7 +69,7 @@ No sponsor technology or prize track has been selected. Computer vision is centr
 
 ## Open decisions
 
-- Final project name.
+- Final project name. - it is now called AirTrack
 - Activation gesture and how it avoids colliding with cursor and click gestures.
 - Click/selection gesture.
 - How the user pauses or turns off control, including an immediate stop action.
