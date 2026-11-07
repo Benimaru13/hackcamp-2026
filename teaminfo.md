@@ -1,6 +1,6 @@
 # Touch-Free Computer Interaction
 
-*Working title; final project name is undecided.*
+#AirTrack
 
 ## Project idea
 
