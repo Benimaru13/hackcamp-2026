@@ -122,11 +122,14 @@ The audio is generated once and played from disk, so the demo itself needs no AP
 key, no network and no extra Python package:
 
 ```bash
-export ELEVENLABS_API_KEY=sk_...      # PowerShell: $env:ELEVENLABS_API_KEY="sk_..."
+copy .env.example .env                # then paste your key / voice id into .env
 python generate_sounds.py             # writes sounds/activated.wav, sounds/released.wav
 python generate_sounds.py --list-voices   # find a voice id you like
 ```
 
+- The key and voice id live in `.env` (git-ignored): `ELEVENLABS_API_KEY` and
+  optional `ELEVENLABS_VOICE_ID`. A real environment variable wins over the file;
+  `--voice-id` wins over both.
 - Change the wording in `CLIPS` in `generate_sounds.py`, then re-run with `--force`.
 - `--mute` silences the cues; missing WAVs are silently skipped, so the app always runs.
 - Commit the generated WAVs if the demo machine should need no key: playback is

@@ -50,6 +50,35 @@ class VoiceTest(unittest.TestCase):
         self.assertFalse(v.say("activated"))
 
 
+class EnvFileTest(unittest.TestCase):
+    def test_env_file_supplies_key_and_voice_without_overriding_the_shell(self):
+        names = ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID", "AIRTRA\x43K_TEST")
+        saved = {k: os.environ.pop(k, None) for k in names}
+        os.environ["AIRTRA\x43K_TEST"] = "from-shell"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                env = Path(d) / ".env"
+                env.write_text('# a comment\n'
+                               'ELEVENLABS_API_KEY="sk_test_123"\n'
+                               'ELEVENLABS_VOICE_ID=voice42\n'
+                               'AIRTRA\x43K_TEST=from-file\n', encoding="utf-8")
+                generate_sounds.load_env_file(env)
+                self.assertEqual(os.environ["ELEVENLABS_API_KEY"], "sk_test_123")
+                self.assertEqual(os.environ["ELEVENLABS_VOICE_ID"], "voice42")
+                self.assertEqual(os.environ["AIRTRA\x43K_TEST"], "from-shell")
+                self.assertEqual(generate_sounds.voice_id(), "voice42")
+                self.assertEqual(generate_sounds.voice_id("explicit"), "explicit")
+        finally:
+            for k, v in saved.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
+    def test_missing_env_file_is_not_an_error(self):
+        generate_sounds.load_env_file(
+            Path(tempfile.gettempdir()) / "airtrack-no-such.env")
+
+
 class ClipTableTest(unittest.TestCase):
     def test_activation_phrase_names_the_app(self):
         self.assertIn("airtrack", generate_sounds.CLIPS["activated"].lower())

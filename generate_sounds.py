@@ -23,6 +23,7 @@ from voice import PCM_RATE, SOUND_DIR, pcm_to_wav
 API = "https://api.elevenlabs.io/v1"
 DEFAULT_VOICE = "21m00Tcm4TlvDq8ikWAM"      # "Rachel", ElevenLabs' default voice
 DEFAULT_MODEL = "eleven_multilingual_v2"
+ENV_FILE = Path(__file__).with_name(".env")
 
 # One clip per app moment. Keep the text short: it plays while you are moving.
 CLIPS = {
@@ -31,12 +32,37 @@ CLIPS = {
 }
 
 
+def load_env_file(path: Path = ENV_FILE) -> None:
+    """Read ``KEY=VALUE`` lines from ``.env`` into os.environ.
+
+    Real environment variables win, so CI or a shell export is never overridden
+    by a stale file. Missing file is fine: the key may also come from the shell.
+    """
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        if key and key not in os.environ:
+            os.environ[key] = value.strip().strip("'\"")
+
+
 def api_key() -> str:
     key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     if not key:
-        sys.exit("ELEVENLABS_API_KEY is not set. Create a key at "
-                 "elevenlabs.io -> Profile -> API keys, then set the variable.")
+        sys.exit("ELEVENLABS_API_KEY is not set. Put it in .env (copy "
+                 ".env.example) or export it; create a key at elevenlabs.io -> "
+                 "Profile -> API keys.")
     return key
+
+
+def voice_id(cli_value: str | None = None) -> str:
+    """CLI flag > ELEVENLABS_VOICE_ID (.env or shell) > built-in default."""
+    return (cli_value or os.environ.get("ELEVENLABS_VOICE_ID", "").strip()
+            or DEFAULT_VOICE)
 
 
 def _request(path: str, key: str, payload=None, accept="audio/pcm") -> bytes:
@@ -81,7 +107,8 @@ def speak(text: str, voice_id: str, model: str, rate: int = PCM_RATE) -> bytes:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description="Generate AirTrack's voice clips with ElevenLabs")
-    ap.add_argument("--voice-id", default=DEFAULT_VOICE)
+    ap.add_argument("--voice-id", default=None,
+                    help="defaults to ELEVENLABS_VOICE_ID in .env, else Rachel")
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--rate", type=int, default=PCM_RATE,
                     help="sample rate; must match a pcm_<rate> output format")
@@ -91,7 +118,9 @@ def main(argv=None) -> int:
                     help="print available voice ids and exit")
     args = ap.parse_args(argv)
 
+    load_env_file()
     key = api_key()
+    chosen_voice = voice_id(args.voice_id)
     if args.list_voices:
         for v in list_voices(key)[:40]:
             print(f"{v.get('voice_id')}  {v.get('name')}  ({v.get('category', '?')})")
@@ -99,12 +128,13 @@ def main(argv=None) -> int:
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    print(f"voice: {chosen_voice}")
     for name, text in CLIPS.items():
         target = out / f"{name}.wav"
         if target.exists() and not args.force:
             print(f"skip {target.name} (exists; --force to regenerate)")
             continue
-        pcm = speak(text, args.voice_id, args.model, args.rate)
+        pcm = speak(text, chosen_voice, args.model, args.rate)
         target.write_bytes(pcm_to_wav(pcm, args.rate))
         print(f"{target.name}: {len(pcm) / 2 / args.rate:.2f}s, "
               f"{target.stat().st_size} bytes  \"{text}\"")

@@ -3,9 +3,12 @@
 Spoken cues played by `voice.py`. They are generated once with ElevenLabs:
 
 ```bash
-export ELEVENLABS_API_KEY=sk_...        # PowerShell: $env:ELEVENLABS_API_KEY="sk_..."
+copy .env.example .env                 # PowerShell; then paste your key into .env
 python generate_sounds.py
 ```
+
+The key and voice id are read from `.env` (`ELEVENLABS_API_KEY`,
+`ELEVENLABS_VOICE_ID`) or from the environment; neither is used at run time.
 
 | clip | when it plays |
 | --- | --- |

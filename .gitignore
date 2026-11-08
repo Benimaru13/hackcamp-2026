@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 models/
 _app_run.log
+.env
+.env.*
+!.env.example
