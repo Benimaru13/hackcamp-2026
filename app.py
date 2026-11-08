@@ -5,7 +5,8 @@
 
 The window shows the camera (mirrored, so it reads like a mirror), the current
 state as a glowing border, the pose it recognises, and an approximate distance.
-Esc / q quits, space switches between ARMED and OFF.
+Esc / q quits, space switches between ARMED and OFF. Spoken cues (if the WAVs
+from generate_sounds.py are in sounds/) announce activation and release.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import cv2
 import numpy as np
 
 from gesture_cursor import Config, ControlState, CursorController
+from voice import Voice
 
 WIN = "AirTrack"
 COLORS = {
@@ -136,6 +138,7 @@ def main(argv=None):
                     help="never move the real cursor (safe testing)")
     ap.add_argument("--no-preview", action="store_true")
     ap.add_argument("--frames", type=int, default=0, help="stop after N frames (testing)")
+    ap.add_argument("--mute", action="store_true", help="no spoken state cues")
     args = ap.parse_args(argv)
 
     from tracker import HandTracker, DEFAULT_MODEL
@@ -181,6 +184,15 @@ def main(argv=None):
     if args.dry_run:
         print("DRY RUN: the cursor will not move.")
 
+    voice = Voice(enabled=not args.mute)
+    if args.mute:
+        print("Voice: muted (--mute).")
+    elif voice.available():
+        print(f"Voice: clips in sounds/ ({', '.join(voice.available())}).")
+    else:
+        print("Voice: silent -- no clips in sounds/. Run 'python generate_sounds.py' "
+              "with ELEVENLABS_API_KEY set to add them.")
+
     frames = detections = clicks = 0
     state = None
     t_start = time.monotonic()
@@ -194,9 +206,14 @@ def main(argv=None):
             detections += bool(fr.detected)
 
             if out.state is not state:
+                was_active = state is ControlState.ACTIVE
                 state = out.state
                 print(f"[{time.monotonic() - t_start:6.1f}s] {state.value.upper()}"
                       f"  ({out.hint})")
+                if state is ControlState.ACTIVE:
+                    voice.say("activated")
+                elif was_active and state is ControlState.ARMED:
+                    voice.say("released")
             if out.action == "click":
                 clicks += 1
                 print(f"[{time.monotonic() - t_start:6.1f}s] click at "

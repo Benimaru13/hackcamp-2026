@@ -112,6 +112,26 @@ Use `--dry-run` for the first setup pass: stand at 10 ft, watch the border and t
 
 ---
 
+## Spoken cues (ElevenLabs)
+
+The app can announce what it is doing, which matters when you are across the room
+and not looking at the border: `sounds/activated.wav` plays when the palm hold
+takes control, `sounds/released.wav` when control is released.
+
+The audio is generated once and played from disk, so the demo itself needs no API
+key, no network and no extra Python package:
+
+```bash
+export ELEVENLABS_API_KEY=sk_...      # PowerShell: $env:ELEVENLABS_API_KEY="sk_..."
+python generate_sounds.py             # writes sounds/activated.wav, sounds/released.wav
+python generate_sounds.py --list-voices   # find a voice id you like
+```
+
+- Change the wording in `CLIPS` in `generate_sounds.py`, then re-run with `--force`.
+- `--mute` silences the cues; missing WAVs are silently skipped, so the app always runs.
+- Commit the generated WAVs if the demo machine should need no key: playback is
+  local, so no request leaves the machine at run time.
+
 ## Tuning for a distance / shaky hands
 
 Live keys in the preview window:
@@ -203,9 +223,13 @@ and record what you see.
 | `app.py` | the demo: wiring, PyAutoGUI control, HUD and edge glow |
 | `fake_hand.py` | synthetic hands (tests and simulation) |
 | `simulate.py` | camera-free simulator and measurement harness |
+| `voice.py` | plays the spoken cue WAVs (stdlib only; never raises) |
+| `generate_sounds.py` | one-time ElevenLabs text-to-speech generator for `sounds/*.wav` |
+| `sounds/` | generated cue clips, see `sounds/README.md` |
+| `tests/test_voice.py` | WAV wrapping and silent-fallback tests |
 | `tests/test_gesture_cursor.py` | unit tests |
 | `mediapipe-setup.py` | camera sanity check (does the webcam open at all?) |
-| `gesture_detector.py`, `test_run.py` | teammate prototype of a dwell-click detector. Not wired into the app, and it uses `mp.solutions.hands`, which the installed mediapipe 1.2.2 no longer provides, so it fails at construction — port it to the Tasks API in `tracker.py` before reusing it. |
+| ~~`gesture_detector.py`, `test_run.py`~~ | teammate prototype of a dwell-click detector, removed from the working tree (it used `mp.solutions.hands`, which mediapipe 1.2.2 no longer provides). Recoverable from the `gesture-control` commit if needed. |
 
 Teammates without a camera or a Mac can do all the logic, UI and reliability work
 against `simulate.py` + the tests; only the macOS-specific permission/control
