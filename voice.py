@@ -45,7 +45,7 @@ def player_command(path: Path):
 
 
 class Voice:
-    """Plays ``sounds/<name>.wav`` in the background, if it exists."""
+    """Plays ``sounds/<name>.wav`` if it exists."""
 
     def __init__(self, directory=None, enabled: bool = True):
         self.directory = Path(directory) if directory else SOUND_DIR
@@ -62,8 +62,8 @@ class Voice:
             return []
         return sorted(p.stem for p in self.directory.glob("*.wav"))
 
-    def say(self, name: str) -> bool:
-        """Start ``name``. Returns True if audio started; never raises."""
+    def say(self, name: str, wait: bool = False) -> bool:
+        """Play ``name``. Optionally wait for it to finish; never raises."""
         if not self.enabled:
             return False
         path = self.clip(name)
@@ -72,16 +72,22 @@ class Voice:
         try:
             if sys.platform == "win32":
                 import winsound
+                flags = winsound.SND_FILENAME | winsound.SND_NODEFAULT
+                if not wait:
+                    flags |= winsound.SND_ASYNC
                 winsound.PlaySound(
-                    str(path),
-                    winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+                    str(path), flags)
                 return True
             argv = player_command(path)
             if argv is None:
                 return False
             self._stop()
-            self._proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL)
+            if wait:
+                subprocess.run(argv, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, check=False)
+            else:
+                self._proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL,
+                                              stderr=subprocess.DEVNULL)
             return True
         except Exception:
             return False

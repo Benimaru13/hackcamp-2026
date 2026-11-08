@@ -36,6 +36,7 @@ COLORS = {
 # speed does not depend on the camera frame rate. SCROLL_STEP is how far one
 # wheel step moves; on macOS the sign follows System Settings > natural scrolling.
 SCROLL_STEP = 1
+isStarted = True
 
 
 def _glow(frame, color, strength=1.0):

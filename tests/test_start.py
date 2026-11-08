@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from calibrate_profile import Profile, save_profile
 from calibration_math import TremorProfile
+import start
 from start import run_sequence
 
 
@@ -55,6 +56,33 @@ def test_a_fresh_start_calibrates_first_and_then_controls():
                         exists=lambda _p: False)
     assert code == 0
     assert order == ["calibrate", ("control", profile.jitter_score)]
+
+
+def test_welcome_message_plays_start_clip_and_waits(monkeypatch, capsys):
+    calls = []
+
+    class _Voice:
+        def say(self, name, wait=False):
+            calls.append((name, wait))
+
+    monkeypatch.setattr(start, "Voice", _Voice)
+    start.welcome_message()
+    assert calls == [("start_message", True)]
+    assert "begin gesture calibration" in capsys.readouterr().out
+
+
+def test_start_wires_greeting_to_calibration_window_visibility(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(start.wizard, "make_source", lambda **_kwargs: object())
+
+    def run_calibration(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(start.wizard, "run_calibration", run_calibration)
+    start._calibrate(_Args("profile.json"))
+
+    assert captured["on_window_visible"] is start.welcome_message
 
 
 def test_a_saved_profile_never_replaces_measuring_this_hand():

@@ -256,7 +256,8 @@ def make_source(camera=0, model=None, width=1280, height=720, simulate=False,
 
 def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     preview=True, width=1280, height=720, distance_m=3.0,
-                    save=True, source=None, keep_open=False):
+                    save=True, source=None, keep_open=False,
+                    on_window_visible=None):
     """Run the wizard and return the profile (None if cancelled).
 
     `save=False` keeps the measurement in memory only: start.py measures on
@@ -343,6 +344,10 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     print("Cancelled.")
                     src.close()
                     return None
+                if on_window_visible is not None:
+                    callback = on_window_visible
+                    on_window_visible = None
+                    callback()
 
         palm = float(np.median(palms)) if palms else 0.0375
         tremor = estimate_tremor(samples)

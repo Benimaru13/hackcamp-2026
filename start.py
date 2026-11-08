@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from voice import Voice
 
 import app_calibrated as control_app
 import calibrate as wizard
@@ -41,7 +42,8 @@ def _calibrate(args):
                                      preview=not args.no_preview,
                                      width=args.width, height=args.height,
                                      save=getattr(args, "save", False),
-                                     source=source, keep_open=True)
+                                     source=source, keep_open=True,
+                                     on_window_visible=welcome_message)
     if profile is not None:
         _HANDOFF["tracker"] = getattr(source, "tracker", None)
     return profile
@@ -98,6 +100,10 @@ def run_sequence(args, calibrate_fn=None, control_fn=None, exists=os.path.exists
         return 0
     return control_fn(args, profile)
 
+def welcome_message():
+    voice = Voice()
+    voice.say("start_message", wait=True)
+    print("Welcome to AirTrack. Please begin gesture calibration.")
 
 def main(argv=None):
     ap = argparse.ArgumentParser(

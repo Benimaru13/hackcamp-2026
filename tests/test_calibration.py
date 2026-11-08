@@ -255,6 +255,47 @@ def test_a_cancelled_wizard_does_not_leak_the_camera():
     assert src.closed is True
 
 
+def test_window_visible_callback_runs_after_first_preview_frame(monkeypatch):
+    import numpy as np
+
+    import calibrate
+
+    class Source(_RealTimeSource):
+        def read(self):
+            return (self.hand.landmarks("palm"),
+                    np.full((120, 160, 3), 20, np.uint8),
+                    self._time.monotonic())
+
+    src = Source()
+    events = []
+    monkeypatch.setattr(calibrate.cv2, "namedWindow", lambda *a, **k: None)
+    monkeypatch.setattr(calibrate.cv2, "resizeWindow", lambda *a, **k: None)
+    monkeypatch.setattr(calibrate.cv2, "setWindowProperty", lambda *a, **k: None)
+    monkeypatch.setattr(calibrate.cv2, "imshow", lambda *a, **k: events.append("frame"))
+    keys = iter((0, 27))
+    monkeypatch.setattr(calibrate.cv2, "waitKey", lambda *_a: next(keys))
+    monkeypatch.setattr(calibrate.cv2, "destroyAllWindows", lambda: None)
+
+    calibrate.run_calibration(source=src, preview=True, save=False,
+                              on_window_visible=lambda: events.append("visible"))
+
+    assert events[:2] == ["frame", "visible"]
+    assert events.count("visible") == 1
+    assert src.closed is True
+
+
+def test_headless_calibration_does_not_invoke_window_visible_callback():
+    from calibrate import make_source, run_calibration
+
+    called = []
+    profile = run_calibration(source=make_source(simulate=True), preview=False,
+                              save=False,
+                              on_window_visible=lambda: called.append(True))
+
+    assert profile is not None
+    assert called == []
+
+
 def test_random_shake_is_not_reported_as_a_tremor():
     """White noise has a spectral peak at some frequency; it is not a tremor."""
     for seed in (11, 12, 13):

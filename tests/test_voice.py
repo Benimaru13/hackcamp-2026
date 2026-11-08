@@ -4,11 +4,14 @@ import sys
 import tempfile
 import unittest
 import wave
+from unittest import mock
+from types import SimpleNamespace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import generate_sounds                                    # noqa: E402
+import voice as voice_module                              # noqa: E402
 from voice import PCM_RATE, Voice, pcm_to_wav              # noqa: E402
 
 
@@ -48,6 +51,37 @@ class VoiceTest(unittest.TestCase):
         v = Voice(directory=Path(tempfile.gettempdir()) / "airtrack-no-such-dir")
         self.assertEqual(v.available(), [])
         self.assertFalse(v.say("activated"))
+
+    def test_wait_mode_uses_blocking_player(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "start_message.wav").write_bytes(b"wav")
+            with mock.patch.object(voice_module.sys, "platform", "linux"), \
+                 mock.patch.object(voice_module, "player_command",
+                                   lambda _path: ["player", "clip"]), \
+                 mock.patch.object(voice_module.subprocess, "run",
+                                   lambda *args, **kwargs: calls.append(
+                                       (args, kwargs))):
+                self.assertTrue(Voice(directory=d).say("start_message", wait=True))
+        self.assertEqual(calls[0][0], (["player", "clip"],))
+        self.assertFalse(calls[0][1]["check"])
+
+    def test_wait_mode_uses_synchronous_winsound_on_windows(self):
+        calls = []
+        fake_winsound = SimpleNamespace(
+            SND_FILENAME=1,
+            SND_NODEFAULT=2,
+            SND_ASYNC=4,
+            PlaySound=lambda path, flags: calls.append((path, flags)),
+        )
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "start_message.wav").write_bytes(b"wav")
+            with mock.patch.object(voice_module.sys, "platform", "win32"):
+                with mock.patch.dict(sys.modules, {"winsound": fake_winsound}):
+                    self.assertTrue(
+                        Voice(directory=d).say("start_message", wait=True))
+        self.assertEqual(calls[0][1], fake_winsound.SND_FILENAME |
+                         fake_winsound.SND_NODEFAULT)
 
 
 class EnvFileTest(unittest.TestCase):

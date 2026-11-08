@@ -9,3 +9,6 @@ _app_run.log
 
 # personal calibration written by `python calibrate.py`
 profile.json
+
+airtrack-web/
+airtrack-backend/

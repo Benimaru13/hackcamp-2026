@@ -29,6 +29,7 @@ ENV_FILE = Path(__file__).with_name(".env")
 CLIPS = {
     "activated": "AirTrack activated.",
     "released": "Control released.",
+    "start_message": "Welcome to Airtrack. Please begin gesture calibration."
 }
 
 
@@ -134,7 +135,9 @@ def main(argv=None) -> int:
         if target.exists() and not args.force:
             print(f"skip {target.name} (exists; --force to regenerate)")
             continue
+
         pcm = speak(text, chosen_voice, args.model, args.rate)
+        print(f"generating {target.name} ...")
         target.write_bytes(pcm_to_wav(pcm, args.rate))
         print(f"{target.name}: {len(pcm) / 2 / args.rate:.2f}s, "
               f"{target.stat().st_size} bytes  \"{text}\"")
