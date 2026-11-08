@@ -51,6 +51,20 @@ def test_jitter_score_is_bounded_and_monotonic():
     assert scores == sorted(scores, reverse=True)
 
 
+def test_the_card_score_describes_the_pixels_printed_next_to_it():
+    """The card prints `jitter_px` and `jitter_score` on the same line, so the score
+    has to come from that px value -- not from the tremor RMS, which also counts the
+    arm drifting across the 3.5 s hold (7.2 px of drift once read as 30/100 next to
+    a 0.9 px reading).
+    """
+    tremor = TremorProfile(freq_hz=0.0, amplitude_px=1.0, rms_px=7.2, score=30)
+    profile = Profile.from_measurement(palm=0.037, jitter_px=0.9,
+                                       distance_ft=3.0, tremor=tremor)
+    assert profile.jitter_px == 0.9
+    assert profile.jitter_score == jitter_score(0.9)
+    assert profile.jitter_score >= 85
+
+
 def test_a_five_hz_tremor_is_measured_as_five_hz():
     samples = []
     for i in range(120):

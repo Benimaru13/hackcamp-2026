@@ -1,4 +1,9 @@
-"""AirTrack demo entry point.
+"""app.py -- the tracker demo WITHOUT calibration (built-in defaults only).
+
+The shipping path is `python start.py`: it measures the hand, then runs
+app_calibrated.py on that measurement. This file is the simple entry point -- same
+loop, no profile, no wizard -- useful for checking the tracker on its own, and it
+is the reference the calibrated copy was forked from.
 
     python app.py                 # run it, raise an open palm to take control
     python app.py --dry-run       # detect + show the HUD, never touch the cursor
@@ -36,7 +41,6 @@ COLORS = {
 # speed does not depend on the camera frame rate. SCROLL_STEP is how far one
 # wheel step moves; on macOS the sign follows System Settings > natural scrolling.
 SCROLL_STEP = 1
-isStarted = True
 
 
 def _glow(frame, color, strength=1.0):
@@ -300,6 +304,15 @@ def main(argv=None):
     reticle = None                 # smoothed aiming-reticle radius
     view = None                    # smoothed (cx, cy, side) of the preview zoom
     
+    # One frame, in this order. A fixed order is what keeps the states predictable:
+    # the control decision is made once, and everything after it is a consequence.
+    #   1. read a frame, advance the controller (pure logic, no I/O)
+    #   2. state cue: full-screen halo
+    #   3. ACTIVE-only gestures: scroll first, then the screen switch
+    #   4. log transitions and clicks
+    #   5. display state only: reticle size, preview zoom
+    #   6. the only OS call: moveTo/click, guarded by --dry-run
+    #   7. draw the HUD, then read one key
     try:
         while True:
             fr = tracker.read()
@@ -379,6 +392,10 @@ def main(argv=None):
             # picture pans like a camera instead of snapping when the crop is
             # re-planned. The size follows more slowly than the position, so the
             # zoom does not pump as the distance estimate breathes.
+            # This is a plain per-frame lerp, so how fast it looks depends on the
+            # frame rate. app_calibrated.py replaces it with zoom.ViewFollow, which
+            # eases in real time; this copy keeps the lerp because it is meant to be
+            # the simple demo, and start.py never runs this file.
             if fr.focused and fr.crop is not None:
                 wx, wy = fr.crop.center
                 want_view = (wx, wy, fr.crop.side)

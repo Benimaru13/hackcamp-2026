@@ -4,11 +4,12 @@
     python calibrate.py --no-preview  # terminal only
     python calibrate.py --simulate    # no camera: synthetic hand (rehearse/test)
 
-Three measurements, and nothing to press: the wizard advances on its own timers,
-so you can stand back and keep your hands in the air for the whole thing.
+Two timed measurements and one acknowledgement. The timed steps advance on their
+own, so you can stand back and keep your hand in the air for the whole thing:
 
-    1. raise an open palm      -- is the camera seeing a hand at all?
+    1. raise an open palm      -- is the camera seeing a hand at all?  (0.6 s)
     2. hold still, pointing    -- 3.5 s: how much you shake, and your hand size
+    3. press CONFIRM on the card -- the only thing you touch (see render_done)
 
 The shake and the hand size are caught in the same window on purpose. Two
 separate four-second holds added four seconds of dead time between launching the
@@ -22,7 +23,7 @@ computer when it finishes, keeping the measurement in memory so no file has to
 exist for the calibrated run to be the real one.
 
 The screen keeps the reading of the web mock: near-black canvas, one teal accent,
-a status panel listing the three steps with a single large instruction, and a
+a status panel listing the two steps with a single large instruction, and a
 countdown ring on your fingertip.
 """
 from __future__ import annotations
@@ -228,7 +229,16 @@ def render(image, step, progress, hint, chips=None, landmarks=None, mirror=True)
 
 
 def render_done(image, profile):
-    """The card shown for a moment after the third measurement."""
+    """The 'Calibrated' card: the one thing in this wizard you acknowledge.
+
+    Drawn over a darkened, letterboxed copy of the last camera frame, and it stays
+    up until CONFIRM is clicked or Enter/Space is pressed (the loop at the end of
+    run_calibration). The pause is deliberate: the next window can move the real
+    mouse pointer, so it must never open behind the user's back.
+
+    Button geometry: (cx - 100, h // 2 + 60, 200x50). run_calibration repeats it
+    in its click callback -- if one moves, the other has to move with it.
+    """
     h, w = (image.shape[:2] if image is not None else (720, 1280))
     if image is not None:
         fitted, _, _, _ = _fit(image, w, h)
@@ -237,7 +247,8 @@ def render_done(image, profile):
         canvas = np.full((h, w, 3), BG, np.uint8)
     cx = w // 2
     ty = h // 2 - 60
-    # 【修改1】去掉了最后一行的 "Taking control..."
+    # No "Taking control..." line: start.py prints the handover message, and this
+    # card is about what was measured, not about what happens next.
     rows = (
         ("Calibrated", ty, 1.15, ACCENT, 2),
         ((f"{profile.tremor_hz:.1f} Hz tremor   -   {profile.tremor_px:.1f} px   -   "
@@ -252,7 +263,8 @@ def render_done(image, profile):
         cv2.putText(canvas, text, (cx - tw // 2, y), FONT, scale, color, thick,
                     cv2.LINE_AA)
                     
-    # 【新增】绘制绿色的 CONFIRM 按钮
+    # CONFIRM: an accent-filled button centred under the numbers, with dark text so
+    # it reads over the fill.
     bx, by, bw, bh = cx - 100, ty + 120, 200, 50
     cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), ACCENT, -1, cv2.LINE_AA)
     (tw, th), _ = cv2.getTextSize("CONFIRM", FONT, 0.65, 2)
@@ -317,39 +329,39 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                 last_lm = lm
 
             if phase == "arm":
-               
+                # Step 1: hold an open palm for ARM_SECONDS. Nothing is measured here;
+                # this only proves a hand is visible and steady enough to measure, which
+                # is why it can be this short.
                 if has_hand and is_arm_pose(lm):
                     if arm_since is None:
                         arm_since = now
-                   
                     progress = min((now - arm_since) / ARM_SECONDS, 1.0)
                 else:
-                   
                     arm_since = None
                     progress = 0.0
-                    
                 hint = "Raise an open palm toward the camera. Stand about 3 m back."
                 if progress >= 1.0:
                     phase, phase_start = "measure", now
                     meter.reset()
                     print("[1/2] hand found")
             else:
-              
+                # Step 2: hold still and point. One window yields both numbers -- the
+                # fingertip's motion is the tremor, the wrist-to-knuckle span is the hand
+                # size -- so asking twice would only add seconds of waiting.
                 if has_hand:
                     sx, sy = lm[8].x * width, lm[8].y * height
                     meter.push(sx, sy)
                     samples.append((now, sx, sy))
                     palms.append(hand_scale(lm))
-                    
                     progress = min((now - phase_start) / MEASURE_SECONDS, 1.0)
                 else:
-                   
+                    # A lost hand restarts the window instead of shortening it: a
+                    # measurement taken across a gap would mix two distances together.
                     phase_start = now
                     progress = 0.0
                     meter.reset()
                     samples.clear()
                     palms.clear()
-                    
                 hint = "Hold still and keep pointing - measuring your hand."
                 if progress >= 1.0:
                     break
@@ -394,26 +406,27 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                   f"  {profile.summary()}")
 
         if show and last_image is not None:
-            # 1. 注册鼠标点击事件
+            # Modal until acknowledged: a click on CONFIRM, Enter/Space, or Esc/q.
+            # cv2 maps mouse coordinates back through the window resize for us, so the
+            # rect here is in the ORIGINAL image space and must match render_done's --
+            # both are written as cx - 100 / h // 2 + 60 / 200x50 for that reason.
             clicked = [False]
-            def check_click(event, x, y, flags, param):
-                if event == cv2.EVENT_LBUTTONDOWN:
-                    h, w = last_image.shape[:2]
-                    cx = w // 2
-                    # 匹配刚才画的按钮坐标
-                    bx, by, bw, bh = cx - 100, h // 2 + 60, 200, 50
-                    if bx <= x <= bx + bw and by <= y <= by + bh:
-                        clicked[0] = True
-            
+
+            def check_click(event, x, y, _flags, _param):
+                if event != cv2.EVENT_LBUTTONDOWN:
+                    return
+                h, w = last_image.shape[:2]
+                cx = w // 2
+                bx, by, bw, bh = cx - 100, h // 2 + 60, 200, 50
+                if bx <= x <= bx + bw and by <= y <= by + bh:
+                    clicked[0] = True
+
             cv2.setMouseCallback(WIN, check_click)
             done_img = render_done(last_image, profile)
-            
-            # 2. 无限循环显示，直到用鼠标点击按钮，或者按下回车/空格键
             while not clicked[0]:
                 cv2.imshow(WIN, done_img)
                 key = cv2.waitKey(20) & 0xFF
-                # 支持键盘直接敲击继续作为备用方案
-                if key in (27, ord("q"), 13, 32): 
+                if key in (27, ord("q"), 13, 32):
                     break
         return profile
     finally:

@@ -6,6 +6,13 @@ start.py), the HUD shows the measured tremor and the holds it tuned, a ring mark
 the fingertip at the size your hand reads from the distance you calibrated at,
 and --verbose prints what is blocking the cursor. app.py itself is untouched.
 
+This is the loop `python start.py` actually runs, so it is the shipping control
+path. The gesture logic still lives in gesture_cursor.py, unchanged: this file
+only decides what to draw and when to talk to the OS. `pointer_test()` runs once
+at startup to prove the OS accepts synthetic mouse events, which is the
+difference between "the demo is broken" and "the Accessibility permission is
+missing".
+
 AirTrack demo entry point.
 
     python app.py                 # run it, raise an open palm to take control

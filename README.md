@@ -6,9 +6,23 @@ hand, and a few deliberate gestures move the mouse and click.
 Built for the hands-occupied case — you are washing dishes, your hands are wet,
 or you are just not within reach of the keyboard.
 
+```bash
+python start.py     # measure your hand, then control the computer -- the normal one
+python app.py       # skip calibration and run the tracker on the built-in defaults
 ```
-python app.py                # run it; raise an open palm to take control
-```
+
+---
+
+## Branches
+
+| Branch | Role |
+| --- | --- |
+| `main` | **What ships.** Everything this README documents: tracker + auto-zoom preview, the calibration wizard, the Calibrated/CONFIRM card, and the calibrated control loop. |
+| `airtrack-desktop` | Feature development. Currently adds the instruction manual (`instruction_panel.py`) that teaches the gestures before control starts, plus startup/latency work. **Not part of `main`.** |
+
+Keep this README describing `main`. If a feature only exists on
+`airtrack-desktop`, say so in the branch table instead of documenting it as
+shipped behaviour.
 
 ---
 
@@ -17,6 +31,10 @@ python app.py                # run it; raise an open palm to take control
 | Piece | Status |
 | --- | --- |
 | Hand tracking from the webcam | working (MediaPipe HandLandmarker, Tasks API) |
+| Calibration for *your* hand | working: `python start.py` runs 2 timed steps (open palm, then hold still), then a Calibrated/CONFIRM card |
+| Saved or reused calibration | working: `--save` writes `profile.json`, `--use-saved` reads it, plain defaults otherwise |
+| Pointer permission check at startup | working: moves the pointer 80 px and back to prove the OS accepts synthetic events (`--no-pointer-test` skips it) |
+| Instruction manual before control | **`airtrack-desktop` only** (`instruction_panel.py`), not in `main` |
 | Long-range tracking (~10 ft) | auto-zoom: the crop follows the hand so the hand fills ~55% of the model input at 1 m and at 4 m, plus a tile scan to acquire a far hand; needs a real 3 m camera test |
 | Cursor movement, distance independent | working, unit tested, measured |
 | Shake / jitter rejection | working, unit tested, measured |
@@ -24,7 +42,7 @@ python app.py                # run it; raise an open palm to take control
 | Arming / releasing control | working: raised open palm to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Aiming reticle | grows with camera distance while the pointing hand is live (HUD only) |
-| Preview zoom | the window shows the auto-zoom crop, so the feed visibly zooms and pans with your hand |
+| Preview zoom | the window shows the auto-zoom crop, so the feed visibly zooms and pans with your hand (eased to the hand by `ViewFollow` in `app_calibrated.py`, a plain per-frame lerp in `app.py`) |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical, held | scrolls up/down, one wheel step every 0.15 s after a 0.2 s hold, ACTIVE only |
 | Two fingers pointed left/right, held 0.55 s | sends ctrl+← / ctrl+→ (previous / next space), then rests 1 s, ACTIVE only |
@@ -36,7 +54,7 @@ python app.py                # run it; raise an open palm to take control
 
 | Pose | Where | What happens |
 | --- | --- | --- |
-| 🖐 Open palm, raised: four fingers up, thumb out, hand held up ~0.5 s | ARMED | takes control (becomes ACTIVE) |
+| 🖐 Open palm, raised: four fingers up, thumb out, held up ~0.55 s (`Config.arm_hold`) | ARMED | takes control (becomes ACTIVE) |
 | ☝️ Index finger only | ACTIVE | moves the cursor |
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
@@ -100,7 +118,7 @@ in `classify_pose()`, so a stray thumb can never release control either.
 ### Interaction states
 
 ```
-            palm held up 0.5 s                  fist held 0.35 s
+            palm held up 0.55 s                 fist held 0.35 s
    OFF  ---------------------->  ARMED  <------------------------->  ACTIVE
   (camera       (amber halo,    (cursor        (green halo,
    released)     "watching")      untouched)     gestures control the cursor)
@@ -131,14 +149,16 @@ in `classify_pose()`, so a stray thumb can never release control either.
 cd hackcamp-2026
 python -m venv .venv && source .venv/bin/activate       # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python app.py
+python start.py            # measure, confirm, then control
+python app.py              # or: control on the built-in defaults, no measuring
 ```
 
 `requirements.txt` includes PyObjC on macOS for the full-screen halo; if it is
 missing the app still runs and draws the glow inside the preview instead.
 
 The first run downloads the 7.8 MB hand model into `models/` (git-ignored). No
-video, frames or landmarks ever leave the machine, and nothing is written to disk.
+video, frames or landmarks ever leave the machine, and nothing is written to disk
+unless you ask for a profile with `--save` (which writes `profile.json`).
 
 **macOS permissions** (both are required, both are asked for on first use):
 
@@ -155,6 +175,7 @@ application on the first run.
 ### Safe ways to try it
 
 ```bash
+python start.py --dry-run --verbose   # measure, then run with the pointer untouched
 python app.py --dry-run        # detects and shows the HUD, never touches the cursor
 python app.py --no-preview     # no window (for a headless machine / CI-ish smoke test)
 python app.py --dry-run --no-preview --frames 60   # 60 frames then exit + summary
@@ -169,8 +190,9 @@ Use `--dry-run` for the first setup pass: stand at 10 ft, watch the halo and the
 ## Spoken cues (ElevenLabs)
 
 The app can announce what it is doing, which matters when you are across the room
-and not looking at the halo: `sounds/activated.wav` plays when an open palm
-takes control, `sounds/released.wav` when control is released.
+and not looking at the halo: `sounds/start_message.wav` greets you when the
+calibration window opens, `sounds/activated.wav` plays when an open palm takes
+control, and `sounds/released.wav` when control is released.
 
 The audio is generated once and played from disk, so the demo itself needs no API
 key, no network and no extra Python package:
@@ -180,7 +202,7 @@ committed in it). Create `.env` yourself -- it is git-ignored:
 
 ```bash
 printf 'ELEVENLABS_API_KEY=sk_your_key\nELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM\n' > .env
-python generate_sounds.py             # writes sounds/activated.wav, sounds/released.wav
+python generate_sounds.py             # writes the three clips in sounds/
 python generate_sounds.py --list-voices   # find a voice id you like
 ```
 
@@ -212,7 +234,7 @@ to start**: lower it. If the cursor is **too fast to aim**: lower `-` (`--speed`
 
 ## Why it works far away, and why it does not shake
 
-Three separate problems, solved separately:
+Four separate problems, solved separately:
 
 1. **The hand is tiny at 10 ft.** The detector resizes its input to a fixed size,
    so what decides whether a hand is findable is how much of that input it fills:
@@ -276,14 +298,19 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 93 tests, no camera needed
+.venv/bin/python -m pytest tests -q --ignore=tests/test_hud.py   # 127 tests, no camera
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 python simulate.py switch                 # two-finger switch: hold, then the 1 s rest
 python simulate.py scroll                 # two-finger scroll: up vs down cadence
 python simulate.py focus                  # auto-zoom: hand share of the model input, 1-4 m
+python simulate.py follow                 # eased preview zoom: pan per frame, never a cut
 python simulate.py cursor                 # aiming reticle size vs distance
 ```
+
+`pytest` is a development tool and is deliberately **not** in `requirements.txt`
+(the app needs none of it): `pip install pytest`. `tests/test_hud.py` needs
+`mediapipe`, which is why it is excluded above when it is not installed.
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
 two-finger direction at 1 m and 3 m (and that no other pose triggers it), the
@@ -293,10 +320,11 @@ cooldown after a release, the lost-hand safety release, the same sweep moving th
 cursor the same distance near and far, no cursor drift from a shaky still hand, a
 2 s point hover clicking once where it settled, staying put never clicking twice,
 palm/fist/pinch never clicking, and dropping the pointing pose cancelling a
-half-finished dwell. The screen switch is tested on its own: a held thumb fires
-exactly once in each direction at 1 m, 2 m and 3 m, it does not fire before
-0.75 s, no other pose can fire it, a held thumb never repeats, a direction flip
-or a release restarts it, and a couple of dropped frames do not. Scroll is tested
+half-finished dwell. The screen switch is tested on its own: a held two-finger V fires
+exactly once in each direction at 1 m, 2 m and 3 m, it does not fire before the
+0.55 s hold, no other pose can fire it, a held V repeats no faster than
+hold + rest, a direction flip or a release restarts it, and a couple of dropped
+frames do not. Scroll is tested
 the same way: up and down stream the same number of wheel steps, down works at all,
 a reversal waits for its hold, no other pose scrolls, and a blink does not stop
 the stream. The auto-zoom is tested as geometry, no camera involved: the planned
@@ -323,11 +351,10 @@ and record what you see.
 
 ## Known issues
 
-- **The screen switch is a hold, not a swipe.** Thumb out to one side, other
-  fingers curled, held 0.75 s; the hand must drop the pose before it can fire
-  again. If it feels strict at 10 ft, lower `Config.swipe_hold`; if it fires while
-  you are just holding your hand, raise it. `Config.swipe_cooldown` is the 1 s
-  pause afterwards.
+- **The screen switch is a hold, not a swipe.** Two fingers pointed left or right,
+  held 0.55 s, then a 1 s rest before input counts again. If it feels strict at
+  10 ft, lower `Config.switch_hold`; if it fires while you are just holding your
+  hand, raise it. `Config.switch_cooldown` is the rest afterwards.
 - **Scroll follows macOS natural scrolling.** If the page moves the opposite way
 to the direction you point, flip the sign of `pyautogui.scroll(...)` in `app.py`
 (one line). The HUD now shows the direction the app currently reads
@@ -356,29 +383,66 @@ sign problem.
   Alt-Tab on Windows, which the swipe does not send yet.
 - **The AppKit halo is verified on a teammate's Mac only.** Click-through over
   full-screen apps and the pulsing border should be confirmed on the demo MacBook.
+- **`deepspace_app.py` and `ds_intg.py` are an unfinished side-demo, not a second
+  entry point.** They came from a DeepSpace-branded experiment and are **not
+  runnable against this core**: they call `Config(click_mode=...)` and
+  `out.cursor_x`, neither of which exists in `gesture_cursor.py`, and their "cloud
+  sync" banners are printed strings, not network calls. Run `app.py` or
+  `start.py`; those two files are kept as history only.
 
 ---
 
-## Files
+## The codebase
+
+### Read it in this order
+
+The codebase has one idea: **keep every decision testable without a camera**, and
+keep the camera/OS edges thin. That shapes the module graph.
+
+1. `zoom.py` → `tracker.py` → `gesture_cursor.py` is the pure-logic spine: crop
+   planning, then hand tracking, then pose + cursor decisions.
+2. `calibration_math.py` → `calibrate_profile.py` → `calibrate.py` is the
+   measurement path, again with the maths first and the camera last.
+3. `app_calibrated.py` (or `app.py`) is the only place that talks to the webcam,
+   PyAutoGUI and the screen halo.
+4. `start.py` is the entry point that sequences calibration into control.
+
+Only three modules import `cv2`, and only two import `mediapipe`; everything the
+interaction depends on can be unit tested on any machine.
+
+### Files
 
 | File | What it is |
 | --- | --- |
-| `gesture_cursor.py` | all interaction logic: poses, states, mapping, smoothing, clicks. No camera, no OS calls — this is the part anyone can test anywhere. |
+| `gesture_cursor.py` | all interaction logic: poses, states, mapping, smoothing, clicks, scroll, screen switch. No camera, no OS calls — this is the part anyone can test anywhere. |
+| `zoom.py` | auto-zoom planning: follow-crop around the hand, acquire-scan tiles, the eased `ViewFollow` camera (pure maths, no camera) |
 | `tracker.py` | camera + MediaPipe HandLandmarker + the auto-zoom pipeline |
-| `zoom.py` | auto-zoom planning: follow-crop around the hand, acquire-scan tiles (pure maths, no camera) |
+| `calibration_math.py` | what a still hand measures: jitter RMS, tremor DFT, and the tuning those imply (pure maths) |
+| `calibrate_profile.py` | the `Profile` dataclass, `profile.json` save/load with per-field clamping, `apply_to_config` |
+| `calibrate.py` | the two-step calibration wizard and its Calibrated/CONFIRM card |
+| `app_calibrated.py` | the control loop that runs on a measurement: HUD, eased preview, calibrated ring, PyAutoGUI, halo |
+| `app.py` | the same demo **without** calibration: built-in defaults only |
+| `start.py` | entry point: calibrate, then hand the open camera to the control loop |
 | `edge_glow.py` | the full-screen click-through state halo (PyObjC/AppKit, macOS; optional, falls back to the preview border) |
-| `app.py` | the demo: wiring, PyAutoGUI control, HUD and screen halo |
 | `fake_hand.py` | synthetic hands (tests and simulation) |
 | `simulate.py` | camera-free simulator and measurement harness |
 | `voice.py` | plays the spoken cue WAVs (stdlib only; never raises) |
 | `generate_sounds.py` | one-time ElevenLabs text-to-speech generator for `sounds/*.wav` |
 | `sounds/` | generated cue clips, see `sounds/README.md` |
-| `tests/test_voice.py` | WAV wrapping and silent-fallback tests |
-| `tests/test_gesture_cursor.py` | unit tests |
-| `tests/test_zoom.py` | auto-zoom geometry tests |
-| `tests/test_magnifier.py` | distance-scaled reticle tests |
-| `mediapipe-setup.py` | camera sanity check (does the webcam open at all?) |
-| ~~`gesture_detector.py`, `test_run.py`~~ | teammate prototype of a dwell-click detector, removed from the working tree (it used `mp.solutions.hands`, which mediapipe 1.2.2 no longer provides). Recoverable from the `gesture-control` commit if needed. |
+| `deepspace_app.py`, `ds_intg.py` | **legacy side-demo, not runnable** — see Known issues |
+| `tests/test_gesture_cursor.py` | poses, states, mapping, click, scroll and switch behaviour (51 tests) |
+| `tests/test_zoom.py` | auto-zoom geometry, preview window and `ViewFollow` easing (29) |
+| `tests/test_calibration.py` | jitter/tremor maths, profile clamping, wizard steps (17) |
+| `tests/test_voice.py` | WAV wrapping and silent-fallback tests (11) |
+| `tests/test_start.py` | calibrate-then-control sequencing, cancellation, handover (8) |
+| `tests/test_magnifier.py` | distance-scaled reticle tests (7) |
+| `tests/test_app_calibrated.py` | calibrated-HUD and profile application tests (4) |
+| `tests/test_hud.py` | HUD drawing against real landmarks (4; needs `mediapipe`) |
+
+Three teammate files from the original prototype — `gesture_detector.py`,
+`test_run.py` and `mediapipe-setup.py` — are **not on this branch**. They used
+`mp.solutions.hands`, which mediapipe 1.2.2 no longer provides; they remain
+recoverable from the `gesture-control` commit.
 
 Teammates without a camera or a Mac can do all the logic, UI and reliability work
 against `simulate.py` + the tests; only the macOS-specific permission/control
@@ -411,3 +475,6 @@ reads the camera only while it is running, and stops on exit.
 - Verify the macOS Accessibility path on the demo MacBook.
 - Ask five people which gestures they actually prefer; the pose set here is a
   starting point, not a conclusion.
+- Review and bring the instruction manual from `airtrack-desktop` onto `main`.
+- Give `deepspace_app.py` / `ds_intg.py` a home (finish or delete them): today
+  they do not run against the current `gesture_cursor.py`.

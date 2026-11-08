@@ -1,4 +1,23 @@
-"""AirTrack demo entry point.
+"""deepspace_app.py -- LEGACY side-demo. Not an entry point, and not runnable.
+
+HISTORY / STATUS
+    An experiment that wrapped the tracker in "DeepSpace" branding: a fake cloud
+    profile fetch, a 3-second "biomechanical analysis" of hand jitter, and printed
+    telemetry at exit. Kept for reference only.
+
+    It does NOT run against the current core, for three concrete reasons:
+      1. `Config(click_mode=...)` -- `click_mode` no longer exists; clicks are
+         dwell-only (see gesture_cursor.Config).
+      2. `out.cursor_x` / `out.cursor_y` -- CursorController.update returns an
+         `Output` with `.x` / `.y`, so this raises AttributeError on frame two.
+      3. The "2-FINGER SWIPE" block below duplicates SwitchDetector, which now owns
+         that gesture properly (a hold, not a stroke).
+
+    Run `python app.py` (defaults) or `python start.py` (calibrated) instead. If
+    this feature comes back, build it on gesture_cursor.py and zoom.py rather than
+    copying the control loop a third time.
+
+Original description follows.
 
     python app.py                 # run it, open palm to take control
     python app.py --dry-run       # detect + show the HUD, never touch the cursor
