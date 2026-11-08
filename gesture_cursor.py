@@ -83,6 +83,10 @@ class Config:
     enter_frames: int = 3        # debounce: fast to accept a pose
     exit_frames: int = 4         # slow to drop it (handles 1-2 dropped frames)
 
+    # --- two-finger scroll ------------------------------------------------
+    scroll_hold: float = 0.20    # hold the V up/down this long before scrolling
+    scroll_interval: float = 0.15  # then one wheel step this often
+
     # --- screen switch: sideways thumb held ------------------------------
     swipe_hold: float = 0.75     # hold a sideways thumb this long for one command
     swipe_cooldown: float = 1.0  # then ignore the gesture this long
@@ -189,7 +193,10 @@ def two_finger_direction(lm):
     if lm is None:
         return None
     idx, mid, ring, pink = fingers_up(lm)
-    if not (idx and mid) or ring or pink:
+    # Only an OPEN palm is excluded (ring AND pinky up). Requiring them to be
+    # perfectly curled rejected a real V pointing down, where the folded fingers
+    # foreshorten and read as extended -- that is why scrolling down did nothing.
+    if not (idx and mid) or (ring and pink):
         return None
     scale = max(hand_scale(lm), 1e-6)
     dx = ((lm[INDEX_TIP].x - lm[INDEX_MCP].x)
@@ -199,10 +206,13 @@ def two_finger_direction(lm):
     # Image y grows downward, so a negative dy points up. The camera image is
     # not mirrored: the user's right is the image's left (dx < 0).
     if abs(dy) > abs(dx):
-        if abs(dy) < 0.6 * scale or abs(dx) > 0.6 * scale:
+        # Vertical is deliberately the lenient axis: the V is the scroll gesture
+        # and pointing it down costs the most projection, so demanding a perfectly
+        # upright finger read made down fail while up worked.
+        if abs(dy) < 0.45 * scale or abs(dx) > 0.7 * scale:
             return None
         return "up" if dy < 0 else "down"
-    if abs(dx) < 0.8 * scale or abs(dy) > 0.6 * scale:
+    if abs(dx) < 0.6 * scale or abs(dy) > 0.6 * scale:
         return None
     return "right" if dx < 0 else "left"
 
@@ -418,6 +428,56 @@ class SwipeDetector:
         self._must_release = True
         self.reset()
         return way
+
+
+class ScrollDetector:
+    """Two-finger vertical scroll as a HELD direction with a steady cadence.
+
+    The old version re-timed from the frame the direction was first seen, so one
+    flickered frame (constant at 3 m) restarted the cadence and the stream
+    stuttered. Worse, the pose test it sat on required the ring and pinky to be
+    cleanly curled, which they are not when the V points down: the folded fingers
+    foreshorten and read as extended, so down never scrolled at all while up
+    worked. Now a short blink keeps the stream alive, the pose only has to not be
+    an open palm, and up and down are the same gesture upside down.
+    """
+
+    def __init__(self, hold=0.20, interval=0.15, grace=0.15):
+        self.hold, self.interval, self.grace = hold, interval, grace
+        self.direction = None
+        self._t0 = 0.0
+        self._seen = -1e9
+        self._next = 0.0
+
+    def reset(self):
+        self.direction = None
+        self._t0 = 0.0
+        self._seen = -1e9
+        self._next = 0.0
+
+    def progress(self, now):
+        """0..1 of the hold before the first step, for the HUD."""
+        if self.direction is None or self.hold <= 0:
+            return 0.0
+        return min(max((now - self._t0) / self.hold, 0.0), 1.0)
+
+    def update(self, lm, now):
+        """+1 for one wheel step up, -1 for one down, 0 for none this frame."""
+        way = two_finger_direction(lm)
+        if way not in ("up", "down"):
+            if self.direction is not None and now - self._seen <= self.grace:
+                return 0                  # a blink, not a stop
+            self.reset()
+            return 0
+        if way != self.direction:
+            self.direction, self._t0, self._seen = way, now, now
+            self._next = now + self.hold + self.interval
+            return 0                      # re-hold before reversing
+        self._seen = now
+        if now < self._next:
+            return 0
+        self._next = now + self.interval
+        return 1 if way == "up" else -1
 
 
 # ---------------------------------------------------------------- output

@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_hand import FakeHand                             # noqa: E402
 from gesture_cursor import (                               # noqa: E402
-    Config, ControlState, CursorController, SwipeDetector, classify_pose,
-    is_arm_pose, is_fist, is_open_palm, is_pointing, pinch_gap,
+    Config, ControlState, CursorController, ScrollDetector, SwipeDetector,
+    classify_pose, is_arm_pose, is_fist, is_open_palm, is_pointing, pinch_gap,
     thumb_direction, two_finger_direction)
 
 DT = 1.0 / 30.0
@@ -423,6 +423,76 @@ class ClickTests(unittest.TestCase):
             clicks += rig.run("fist", DT).action == "click"
         self.assertEqual(rig.ctrl.state, ControlState.ARMED, "fist should release")
         self.assertEqual(clicks, 0, "closing the fist fired a click")
+
+
+class ScrollTests(unittest.TestCase):
+    """Two-finger vertical scroll. Down used to do nothing while up worked: the
+    pose test wanted the ring and pinky cleanly curled, and pointing the V down
+    makes those folded fingers read as extended. Both directions are now the same
+    gesture upside down, and a blink no longer restarts the cadence."""
+
+    def stream(self, way, seconds=1.5, distance_m=3.0):
+        det = ScrollDetector()
+        angle = 0.0 if way == "up" else math.pi
+        hand = FakeHand(pose="two", angle=angle).at_distance(distance_m)
+        t = 0.0
+        steps = []
+        for _ in range(int(seconds / DT)):
+            t += DT
+            got = det.update(hand.landmarks(), t)
+            if got:
+                steps.append(got)
+        return steps
+
+    def test_up_and_down_both_stream(self):
+        up, down = self.stream("up"), self.stream("down")
+        self.assertGreaterEqual(len(up), 5, "up did not stream")
+        self.assertGreaterEqual(len(down), 5, "pointing down must scroll too")
+        self.assertEqual(set(up), {1})
+        self.assertEqual(set(down), {-1})
+
+    def test_the_two_directions_match(self):
+        self.assertEqual(len(self.stream("up")), len(self.stream("down")))
+
+    def test_the_hold_is_required_before_the_first_step(self):
+        det = ScrollDetector()
+        hand = FakeHand(pose="two").at_distance(3.0)
+        out = [det.update(hand.landmarks(), i * DT) for i in range(8)]
+        self.assertFalse(any(out), "scrolled before the 0.2 s hold finished")
+
+    def test_only_two_fingers_scroll(self):
+        for pose in ("point", "palm", "fist", "pinch", "relaxed"):
+            det = ScrollDetector()
+            hand = FakeHand(pose=pose).at_distance(3.0)
+            out = [det.update(hand.landmarks(), i * DT) for i in range(90)]
+            self.assertFalse(any(out), f"{pose} scrolled")
+
+    def test_a_dropped_frame_does_not_stop_the_stream(self):
+        det = ScrollDetector()
+        hand = FakeHand(pose="two", angle=math.pi).at_distance(3.0)
+        t = 0.0
+        steps = []
+        for i in range(int(1.5 / DT)):
+            t += DT
+            got = det.update(None if i % 12 == 0 else hand.landmarks(), t)
+            if got:
+                steps.append(got)
+        self.assertGreaterEqual(len(steps), 5, "blinks restarted the cadence")
+        self.assertEqual(set(steps), {-1})
+
+    def test_reversing_takes_a_short_hold(self):
+        det = ScrollDetector()
+        hand = FakeHand(pose="two", angle=0.0).at_distance(3.0)
+        t = 0.0
+        for _ in range(int(0.5 / DT)):
+            t += DT
+            det.update(hand.landmarks(), t)
+        hand.angle = math.pi
+        steps = []
+        for _ in range(int(0.2 / DT)):            # inside the 0.2 s hold
+            t += DT
+            steps.append(det.update(hand.landmarks(), t))
+        self.assertFalse(any(steps), "a reversal fired immediately")
 
 
 class SwipeTests(unittest.TestCase):

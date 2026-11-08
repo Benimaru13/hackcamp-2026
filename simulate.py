@@ -14,6 +14,7 @@ Run:  python simulate.py            (all scenarios)
 """
 from __future__ import annotations
 
+import math
 import sys
 import time
 
@@ -125,6 +126,25 @@ def scenario_gestures(distance_m=3.0):
     return logs
 
 
+def scenario_scroll(distance_m=3.0, seconds=2.0):
+    """Two-finger scroll held each way: same gesture upside down, same stream."""
+    from gesture_cursor import ScrollDetector
+    cfg = Config()
+    rows = []
+    for way, angle in (("up", 0.0), ("down", math.pi)):
+        det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
+        hand = FakeHand(pose="two", angle=angle).at_distance(distance_m)
+        t = 0.0
+        steps = []
+        for _ in range(int(seconds / DT)):
+            t += DT
+            got = det.update(hand.landmarks(), t)
+            if got:
+                steps.append(round(t, 2))
+        rows.append((way, steps))
+    return rows
+
+
 def scenario_switch(distance_m=3.0):
     """Screen switch: a sideways thumb held. Show when it fires, and that a thumb
     left up cannot fire twice -- the return stroke failure that started this."""
@@ -204,6 +224,13 @@ def main(argv):
         print("gesture sequence at 3 m (time, state, action)")
         for t, state, action in scenario_gestures():
             print(f"  {t:5.2f}s  {state:<7} {action}")
+        print()
+
+    if which in ("all", "scroll"):
+        print("two-finger scroll at 3 m, 2 s held each way (wheel steps)")
+        for way, steps in scenario_scroll():
+            first = f"{steps[0]:.2f}s" if steps else "never"
+            print(f"  {way:<4}: {len(steps):2d} steps, first at {first}")
         print()
 
     if which in ("all", "switch"):

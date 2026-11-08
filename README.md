@@ -24,7 +24,7 @@ python app.py                # run it; raise an open palm to take control
 | Arming / releasing control | working: raised open palm to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
-| Two-finger vertical swipe | scrolls up/down, one wheel step per 0.15 s, ACTIVE only |
+| Two-finger vertical, held | scrolls up/down, one wheel step every 0.15 s after a 0.2 s hold, ACTIVE only |
 | Sideways thumb, held 0.75 s | sends ctrl+← / ctrl+→ (previous / next space), ACTIVE only |
 | Volume / media keys | not in the MVP |
 
@@ -38,7 +38,7 @@ python app.py                # run it; raise an open palm to take control
 | ☝️ Index finger only | ACTIVE | moves the cursor |
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
-| ✌️ Two fingers, pointing up/down | ACTIVE | scrolls (one wheel step every 0.15 s) |
+| ✌️ Two fingers, pointing up or down, held | ACTIVE | scrolls that way (a wheel step every 0.15 s, after a 0.2 s hold) |
 | 👍 Thumb straight out to one side, other fingers curled, held ~0.75 s | ACTIVE | sends ctrl+← / ctrl+→ (previous / next space) |
 | — Esc / `q` / Ctrl-C | any time | quits, control released |
 
@@ -257,10 +257,11 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 57 tests, no camera needed
+python -m unittest discover -s tests -v   # 63 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 python simulate.py switch                 # thumb hold: when it fires, and no repeat
+python simulate.py scroll                 # two-finger scroll: up vs down cadence
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
@@ -274,7 +275,10 @@ palm/fist/pinch never clicking, and dropping the pointing pose cancelling a
 half-finished dwell. The screen switch is tested on its own: a held thumb fires
 exactly once in each direction at 1 m, 2 m and 3 m, it does not fire before
 0.75 s, no other pose can fire it, a held thumb never repeats, a direction flip
-or a release restarts it, and a couple of dropped frames do not.
+or a release restarts it, and a couple of dropped frames do not. Scroll is tested
+the same way: up and down stream the same number of wheel steps, down works at all,
+a reversal waits for its hold, no other pose scrolls, and a blink does not stop
+the stream.
 
 What is **not** verified yet: an actual person at 10 ft with a real webcam. The
 tracking pipeline runs on this machine (camera + model + frames), but the
@@ -291,6 +295,11 @@ and record what you see.
   again. If it feels strict at 10 ft, lower `Config.swipe_hold`; if it fires while
   you are just holding your hand, raise it. `Config.swipe_cooldown` is the 1 s
   pause afterwards.
+- **Scroll follows macOS natural scrolling.** If the page moves the opposite way
+to the direction you point, flip the sign of `pyautogui.scroll(...)` in `app.py`
+(one line). The HUD now shows the direction the app currently reads
+(`scroll: up`/`down`), which is the fastest way to tell a detection problem from a
+sign problem.
 - **Dim rooms still cost accuracy.** `tracker.py` brightens the frame handed to the
   model and always retries a full-frame scan, but a detector is still a detector:
   face a lamp, not a window, during the demo.

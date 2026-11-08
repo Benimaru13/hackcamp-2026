@@ -20,8 +20,8 @@ import time
 import cv2
 import numpy as np
 
-from gesture_cursor import (Config, ControlState, CursorController, SwipeDetector,
-                            two_finger_direction)
+from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
+                            SwipeDetector)
 from voice import Voice
 
 WIN = "AirTrack"
@@ -31,12 +31,10 @@ COLORS = {
     ControlState.OFF: (120, 120, 120),     # grey
 }
 
-# Two-finger vertical scroll: one wheel step every SCROLL_INTERVAL seconds, so
-# the speed does not depend on the camera frame rate. Bigger interval = slower;
-# SCROLL_STEP is how far one step moves.
+# Two-finger vertical scroll: ScrollDetector emits one step per interval, so the
+# speed does not depend on the camera frame rate. SCROLL_STEP is how far one
+# wheel step moves; on macOS the sign follows System Settings > natural scrolling.
 SCROLL_STEP = 1
-SCROLL_INTERVAL = 0.15
-SCROLL_MAX_STEPS = 1        # cap a burst if one frame arrives late
 
 
 def _glow(frame, color, strength=1.0):
@@ -128,6 +126,7 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
             f"zoom: {fr.zoom:.1f}x",
             f"{fr.fps:.0f} fps",
             "switch: thumb left/right, hold 0.75 s",
+            f"scroll: {extra.get('scroll', '-')}",
             f"speed {extra['speed']:.2f}  min speed {extra['min_speed']:.2f}",
             f"click: {extra['click']}{'  [DRY RUN]' if extra['dry'] else ''}"]
     y = h - 20 - 22 * (len(info) - 1)
@@ -237,8 +236,8 @@ def main(argv=None):
     state = None
     t_start = time.monotonic()
     swipe_det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
+    scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
     scroll_dir = None
-    last_scroll_time = 0.0
     
     try:
         while True:
@@ -254,29 +253,24 @@ def main(argv=None):
             if glow is not None:
                 glow.update(out.state.value, current_time)
 
-            direction = two_finger_direction(fr.landmarks)
-
-            # Two-finger vertical: hold the V pointing up/down to scroll slowly.
-            # The rate is per second, not per frame, so it feels the same at
-            # 15 fps and at 60 fps. Only in ACTIVE: ARMED stays hands-off.
-            if direction in ("up", "down") and out.state is ControlState.ACTIVE:
-                if direction != scroll_dir:
-                    scroll_dir = direction
-                    last_scroll_time = current_time
-                    print(f"[{current_time - t_start:6.1f}s] ✌️ "
-                          f"two fingers {direction} -> scrolling {direction}")
-                elapsed = current_time - last_scroll_time
-                if elapsed >= SCROLL_INTERVAL:
-                    steps = min(int(elapsed / SCROLL_INTERVAL), SCROLL_MAX_STEPS)
-                    if pyautogui is not None and not args.dry_run:
-                        pyautogui.scroll(
-                            SCROLL_STEP * steps if direction == "up"
-                            else -SCROLL_STEP * steps)
-                    last_scroll_time = current_time
+            # Two-finger vertical: hold the V pointing up/down to scroll. The
+            # detector emits at a fixed cadence (per second, not per frame) and
+            # treats the two directions identically, so down is simply the gesture
+            # upside down. ACTIVE only: ARMED stays hands-off.
+            if out.state is ControlState.ACTIVE:
+                scroll_step = scroll_det.update(fr.landmarks, current_time)
             else:
-                if scroll_dir is not None:
+                scroll_det.reset()
+                scroll_step = 0
+            if scroll_step and pyautogui is not None and not args.dry_run:
+                pyautogui.scroll(SCROLL_STEP * scroll_step)
+            if scroll_det.direction != scroll_dir:
+                scroll_dir = scroll_det.direction
+                if scroll_dir:
+                    print(f"[{current_time - t_start:6.1f}s] ✌️ "
+                          f"two fingers {scroll_dir} -> scrolling {scroll_dir}")
+                else:
                     print(f"[{current_time - t_start:6.1f}s] ✌️ scroll stopped")
-                scroll_dir = None
 
             # Screen switch: a sideways thumb HELD for 0.75 s. ACTIVE only -- it
             # used to fire in every state, so it changed screens with nothing
@@ -323,6 +317,7 @@ def main(argv=None):
                 frame = draw_hud(fr.image, out, fr, {
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
                     "swipe": swipe_det.progress(current_time),
+                    "scroll": scroll_det.direction or "-",
                     "click": "hold still", "dry": args.dry_run},
                     mirror=cfg.mirror, halo=halo_in_preview)
                 cv2.imshow(WIN, frame)
