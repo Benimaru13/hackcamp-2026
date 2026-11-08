@@ -3,7 +3,7 @@
 Spoken cues played by `voice.py`. They are generated once with ElevenLabs:
 
 ```bash
-copy .env.example .env                 # PowerShell; then paste your key into .env
+# create .env yourself (git-ignored): ELEVENLABS_API_KEY=sk_your_key
 python generate_sounds.py
 ```
 

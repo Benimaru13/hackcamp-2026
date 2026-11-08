@@ -53,9 +53,9 @@ def load_env_file(path: Path = ENV_FILE) -> None:
 def api_key() -> str:
     key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
     if not key:
-        sys.exit("ELEVENLABS_API_KEY is not set. Put it in .env (copy "
-                 ".env.example) or export it; create a key at elevenlabs.io -> "
-                 "Profile -> API keys.")
+        sys.exit("ELEVENLABS_API_KEY is not set. Put it in .env as "
+                 "ELEVENLABS_API_KEY=sk_... or export it; create a key at "
+                 "elevenlabs.io -> Profile -> API keys.")
     return key
 
 

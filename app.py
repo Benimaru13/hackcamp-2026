@@ -4,7 +4,9 @@
     python app.py --dry-run       # detect + show the HUD, never touch the cursor
 
 The window shows the camera (mirrored, so it reads like a mirror), the current
-state as a glowing border, the pose it recognises, and an approximate distance.
+state, the pose it recognises, and an approximate distance. The state cue itself is
+the full-screen halo (overlay.py) -- a click-through border around the whole
+desktop -- because at 10 ft you are looking at the screen, not at this window.
 Esc / q quits, space switches between ARMED and OFF. Spoken cues (if the WAVs
 from generate_sounds.py are in sounds/) announce activation and release.
 """
@@ -67,7 +69,7 @@ def _arc(img, center, radius, fraction, color, thickness=3):
                   cv2.LINE_AA)
 
 
-def draw_hud(frame, out, fr, extra, mirror=True):
+def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
     """mirror=True flips the picture horizontally so it reads like a mirror,
     which is the same convention the cursor mapping uses (Config.mirror in
     gesture_cursor.py). Keep the two in sync or the preview lies about which
@@ -81,8 +83,9 @@ def draw_hud(frame, out, fr, extra, mirror=True):
         return w - 1 - x_px if mirror else x_px
 
     pulse = 0.75 + 0.25 * np.sin(time.monotonic() * 5.0)
-    frame = _glow(frame, COLORS[out.state],
-                  strength=1.0 if out.state is ControlState.ACTIVE else 0.45 * pulse)
+    if halo:   # fallback only: with the full-screen overlay the preview stays clean
+        frame = _glow(frame, COLORS[out.state],
+                      strength=1.0 if out.state is ControlState.ACTIVE else 0.45 * pulse)
 
     if fr.box:
         xa, xb = X(fr.box[0]), X(fr.box[2])
@@ -127,7 +130,6 @@ def main(argv=None):
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--model", default=None, help="path to hand_landmarker.task")
-    ap.add_argument("--click", choices=("pinch", "dwell"), default="pinch")
     ap.add_argument("--speed", type=float, default=Config.speed,
                     help="screen widths travelled per palm-length of hand movement")
     ap.add_argument("--min-speed", type=float, default=Config.min_speed,
@@ -139,6 +141,8 @@ def main(argv=None):
     ap.add_argument("--no-preview", action="store_true")
     ap.add_argument("--frames", type=int, default=0, help="stop after N frames (testing)")
     ap.add_argument("--mute", action="store_true", help="no spoken state cues")
+    ap.add_argument("--no-overlay", action="store_true",
+                    help="no full-screen halo (the preview border is used instead)")
     args = ap.parse_args(argv)
 
     from tracker import HandTracker, DEFAULT_MODEL
@@ -160,7 +164,7 @@ def main(argv=None):
         sw, sh = Config.screen_w, Config.screen_h
 
     cfg = Config(screen_w=sw, screen_h=sh, speed=args.speed,
-                 min_speed=args.min_speed, click_mode=args.click)
+                 min_speed=args.min_speed)
     ctrl = CursorController(cfg)
 
     try:
@@ -170,6 +174,20 @@ def main(argv=None):
         print(f"camera/model error: {exc}")
         return 1
     cfg.frame_w = tracker.width
+
+    # The halo window is created before the OpenCV window so Qt owns the app first.
+    glow = None
+    if args.no_overlay:
+        print("Screen halo: off (--no-overlay); the preview border is used.")
+    else:
+        from overlay import ScreenGlow
+        glow = ScreenGlow()
+        if glow.enabled:
+            print("Screen halo: full screen, click-through (overlay.py).")
+        else:
+            print(f"Screen halo: unavailable ({glow.reason}); "
+                  "the preview border is used instead.")
+    halo_in_preview = glow is None or not glow.enabled
 
     if gui:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -181,6 +199,7 @@ def main(argv=None):
 
     print(f"AirTrack running ({tracker.width}x{tracker.height}).")
     print("ARMED: hold an open palm for half a second to take control.")
+    print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
     if args.dry_run:
         print("DRY RUN: the cursor will not move.")
 
@@ -208,6 +227,11 @@ def main(argv=None):
             detections += bool(fr.detected)
 
             current_time = time.monotonic()
+
+            if glow is not None and glow.enabled:
+                pulse = 0.75 + 0.25 * math.sin(current_time * 5.0)
+                glow.show_state(out.state, 1.0 if out.state is ControlState.ACTIVE
+                                else 0.45 * pulse)
 
             if fr.landmarks:
                 # Get coordinates for Wrist (0), Index (5, 8) and Middle (9, 12) fingers
@@ -267,9 +291,11 @@ def main(argv=None):
 
             if not args.dry_run and pyautogui is not None:
                 try:
-                    if out.action == "move":
+                    if out.action in ("move", "click"):
+                        # The click lands on the hover anchor, not wherever the
+                        # cursor drifted: move first, then click.
                         pyautogui.moveTo(int(out.x), int(out.y), _pause=False)
-                    elif out.action == "click":
+                    if out.action == "click":
                         pyautogui.click(_pause=False)
                 except pyautogui.FailSafeException:
                     # Deliberate emergency stop (the real pointer is in a corner).
@@ -282,8 +308,8 @@ def main(argv=None):
             if gui:
                 frame = draw_hud(fr.image, out, fr, {
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
-                    "click": cfg.click_mode, "dry": args.dry_run},
-                    mirror=cfg.mirror)
+                    "click": "hold still", "dry": args.dry_run},
+                    mirror=cfg.mirror, halo=halo_in_preview)
                 cv2.imshow(WIN, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
@@ -311,6 +337,8 @@ def main(argv=None):
     finally:
         ctrl.disarm()
         tracker.close()
+        if glow is not None:
+            glow.close()
         if gui:
             cv2.destroyAllWindows()
 

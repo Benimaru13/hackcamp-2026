@@ -6,7 +6,7 @@ Pipeline:  MediaPipe landmarks
         -> state machine   ARMED --(open palm held)--> ACTIVE --(fist held)--> ARMED
         -> hand position converted to palm-lengths (identical at every distance)
         -> One Euro smoothing + deadzone in that space (shake tolerance)
-        -> relative cursor movement + pinch click (or dwell click)
+        -> relative cursor movement + dwell click (pointing hand held still)
 
 Everything here is pure Python and landmark-agnostic: a landmark is any object
 with .x and .y in normalized frame coordinates (0..1). That means the whole
@@ -60,16 +60,16 @@ class Config:
     beta: float = 1.2            # higher = less lag during fast movement
     d_cutoff: float = 0.4        # velocity smoothing; lower = steadier threshold
 
-    # --- click: pinch ----------------------------------------------------
-    click_mode: str = "pinch"    # "pinch" (deliberate) or "dwell" (holds still)
-    pinch_ratio: float = PINCH_RATIO
-    pinch_context: float = 0.50  # pinch only counts just after a pointing frame
+    # --- click: the pointing hand held still -----------------------------
+    # This is the only click, and it needs the live point pose, so no other pose
+    # can fire one. click_cooldown is a belt-and-braces guard against a double
+    # fire from a wrist-twitch at the click moment.
     click_cooldown: float = 0.45
 
     # --- click: dwell ----------------------------------------------------
     dwell_time: float = 2.0
-    dwell_radius: float = 0.20   # wobble allowed while dwelling (palm-lengths)
-    stick_after: float = 0.5     # snap to the anchor so the click lands where intended
+    dwell_radius: float = 0.20   # wobble allowed before the countdown restarts (palm-lengths)
+    still_palm: float = 0.15     # hand travel that must back a cursor move (palm-lengths)
     post_click_lock: bool = True
 
     # --- state machine ---------------------------------------------------
@@ -294,7 +294,6 @@ class CursorController:
         self.pos = (self.cfg.screen_w / 2.0, self.cfg.screen_h / 2.0)
         self._reset_tracking()
         self._last_seen = -1e9
-        self._pose_t = -1e9
         self._last_click = -1e9
         self._arm_ready_at = -1e9
         self._reset_gates()
@@ -306,18 +305,24 @@ class CursorController:
         self._filt_x = OneEuro(c.min_cutoff, c.beta, c.d_cutoff)
         self._filt_y = OneEuro(c.min_cutoff, c.beta, c.d_cutoff)
         self._last_t = None            # previous frame time, for dt
+        self._prev_f = None            # previous smoothed hand position
+        self._hand = (0.0, 0.0)        # smoothed fingertip, normalized frame coords
+        self._scale = 1.0              # palm length (normalized) this frame
 
     def _reset_gates(self):
         c = self.cfg
         self._g_palm = Gate(c.enter_frames, c.exit_frames)
         self._g_fist = Gate(c.enter_frames, c.exit_frames)
         self._g_point = Gate(c.enter_frames, c.exit_frames)
-        self._g_pinch = Gate(c.enter_frames, c.exit_frames)
 
-    def _reset_dwell(self):
-        self._anchor = None
+    def _reset_dwell(self, keep_lock=False):
+        self._anchor = None        # cursor position where the hover began
+        self._hand_at_anchor = (0.0, 0.0)   # fingertip (normalized) at the anchor
+        self._anchor_scale = 1.0   # palm length at the anchor
         self._t0 = 0.0
-        self._locked = False
+        self._not_point = 0        # consecutive frames without the point pose
+        if not keep_lock:
+            self._locked = False   # clicked here already: move away to click again
 
     def disarm(self):
         """Off: stop watching. Safe to call from anywhere."""
@@ -357,26 +362,33 @@ class CursorController:
         """
         c = self.cfg
         s = max(hand_scale(lm), 1e-6)
-        hx = (lm[c.grab_point].x - 0.5) / s
-        hy = (lm[c.grab_point].y - 0.5) / s
-        if c.mirror:
-            hx = -hx
-        fx, fy = self._filt_x(hx, now), self._filt_y(hy, now)   # smooth position
+        self._scale = s
+        # Smooth the fingertip in NORMALIZED frame units, not divided by the palm
+        # length: dividing an off-centre hand by a noisy scale amplifies that noise
+        # by the offset (up to 10x near a frame edge at 3 m), which made a still hand
+        # look like it was moving. The palm length is applied to the smoothed
+        # DISPLACEMENT instead, where the same noise is only a small relative error.
+        sign = -1.0 if c.mirror else 1.0
+        fx = self._filt_x(lm[c.grab_point].x, now)
+        fy = self._filt_y(lm[c.grab_point].y, now)
+        self._hand = (fx, fy)
         dt = 0.0 if self._last_t is None else max(now - self._last_t, 0.0)
         self._last_t = now
+        prev, self._prev_f = self._prev_f, (fx, fy)
         if not apply or dt <= 0:
-            return False                  # frozen (pinching/idle): drop, never queue up
+            return False                  # frozen (non-point pose): never queue up
 
-        # Threshold on hand SPEED, not on a frame-to-frame jump: a shaking hand
-        # has near-zero average speed, so it never passes the threshold, while a
-        # deliberate move passes it immediately. Jump detection needed a large
-        # threshold to reject noise; speed does not, so slow aiming still works.
-        vx, vy = self._filt_x.v_hat, self._filt_y.v_hat
-        speed = math.hypot(vx, vy)
-        if speed <= c.min_speed:
+        # Threshold on hand SPEED, in palm-lengths per second: a shaking hand has
+        # near-zero average speed, so it never passes the threshold, while a
+        # deliberate move passes it immediately.
+        speed = math.hypot(self._filt_x.v_hat, self._filt_y.v_hat) / s
+        if speed <= c.min_speed or prev is None:
             return False
-        k = (speed - c.min_speed) / speed
-        step_x, step_y = vx * k * self.gain * dt, vy * k * self.gain * dt
+        # Move by DISPLACEMENT, not by velocity. Integrating the filter's velocity
+        # made the cursor coast a couple of hundred pixels after the hand stopped
+        # (v_hat decays slowly), which also kept restarting the click countdown.
+        step_x = sign * (fx - prev[0]) * self.gain / s
+        step_y = (fy - prev[1]) * self.gain / s
 
         m = math.hypot(step_x, step_y)
         if m > c.max_jump_px:             # glitch clamp
@@ -389,26 +401,47 @@ class CursorController:
         return True
 
     # ---- dwell click
-    def _dwell(self, x, y, now):
+    def _dwell(self, now):
+        """One click per hover, at the spot where the pointing hand came to rest.
+
+        Stillness is judged on the CURSOR, which the speed gate holds still, so
+        detector jitter cannot restart the countdown -- the raw fingertip is far too
+        noisy for that (2 px is ~0.04 palm-lengths per axis at 3 m). But the gate
+        does leak a frame now and then at 3 m, so every judgement that matters is
+        corroborated by the smoothed HAND: a move only restarts the countdown if the
+        hand travelled with it. "hold still = exactly one click" is then independent
+        of gate noise, and the click lands at a true 2 s.
+
+        The lock survives a pose gap: dropping the point pose and pointing again at
+        the same spot must not click a second time, because the spot never changed.
+        """
         c = self.cfg
-        r = c.dwell_radius * self.gain
+        x, y = self.pos
+        hx, hy = self._hand
+        r = c.dwell_radius * self.gain          # radius in screen pixels
         if self._anchor is None:
-            self._anchor, self._t0 = (x, y), now
+            self._anchor, self._hand_at_anchor = (x, y), (hx, hy)
+            self._anchor_scale, self._t0 = self._scale, now
             return x, y, 0.0, False
         ax, ay = self._anchor
-        if math.hypot(x - ax, y - ay) > r:
-            self._anchor, self._t0, self._locked = (x, y), now, False
+        moved = (math.hypot(x - ax, y - ay) > r
+                 and math.hypot(hx - self._hand_at_anchor[0],
+                                hy - self._hand_at_anchor[1])
+                 / max(self._anchor_scale, 1e-6) > c.still_palm)
+        if moved:
+            # A real move to a new spot: restart the countdown, re-arm a used click.
+            self._locked = False
+            self._anchor, self._hand_at_anchor = (x, y), (hx, hy)
+            self._anchor_scale, self._t0 = self._scale, now
             return x, y, 0.0, False
         if self._locked:
-            return ax, ay, 0.0, False
+            return x, y, 0.0, False             # clicked here already: move away
         elapsed = now - self._t0
         if elapsed >= c.dwell_time:
             self._locked = c.post_click_lock
-            if not c.post_click_lock:
-                self._t0 = now
-            return ax, ay, 1.0, True
-        if elapsed >= c.stick_after:
-            return ax, ay, elapsed / c.dwell_time, False
+            self._hand_at_anchor, self._anchor_scale = (hx, hy), self._scale
+            self._t0 = now
+            return x, y, 1.0, True
         return x, y, elapsed / c.dwell_time, False
 
     # ---- main entry point: call once per frame
@@ -428,7 +461,6 @@ class CursorController:
         self._g_palm.update(now, pose == "palm", c.arm_hold)
         self._g_fist.update(now, pose == "fist", c.stop_hold)
         self._g_point.update(now, pose == "point")
-        self._g_pinch.update(now, has_hand and pinch_gap(lm) < c.pinch_ratio)
 
         # ------------------------------------------------ ARMED
         if self.state is ControlState.ARMED:
@@ -454,42 +486,33 @@ class CursorController:
             return Output(self.state, *self.pos, action="release", pose="",
                           hint="hand lost -> control released")
 
-        # a pinch freezes the cursor: the fingers meeting must not drag the pointer.
-        # Uses the raw pose, not the debounced one, so the very first pinch frame
-        # already stops movement.
-        frozen = c.click_mode == "pinch" and has_hand and pinch_gap(lm) < c.pinch_ratio
-        if self._g_point.on:
-            self._pose_t = now
-
         action = None
         progress = 0.0
         if has_hand:
-            if self._move_relative(lm, now, apply=self._g_point.on and not frozen):
+            if self._move_relative(lm, now, apply=self._g_point.on):
                 action = "move"
 
-        if c.click_mode == "pinch":
-            if has_hand:
-                gap = pinch_gap(lm)
-                progress = max(0.0, min(1.0, 1.0 - gap / max(c.pinch_ratio, 1e-6)))
-            if (self._g_pinch.rose
-                    and now - self._pose_t < c.pinch_context
-                    and now - self._last_click > c.click_cooldown):
+        # The click belongs to the point gesture only, so the dwell runs on the
+        # LIVE pose, not on the debounced gate: a fist, palm or pinch cancels a
+        # half-finished countdown instead of letting it fire a frame or two after
+        # the pose changed (the gate's exit hysteresis allowed exactly that).
+        if has_hand and pose == "point":
+            self._not_point = 0
+            x, y, progress, clicked = self._dwell(now)
+            self.pos = (x, y)
+            if clicked and now - self._last_click > c.click_cooldown:
                 self._last_click = now
                 action = "click"
-                self._reset_dwell()
-            elif self._g_point.on:
-                self._reset_dwell()
-        else:  # dwell
-            if has_hand and self._g_point.on:
-                x, y, progress, clicked = self._dwell(*self.pos, now)
-                self.pos = (x, y)
-                if clicked and now - self._last_click > c.click_cooldown:
-                    self._last_click = now
-                    action = "click"
-            else:
-                self._reset_dwell()
+        else:
+            # One misread frame must not wipe a half-finished countdown or a click
+            # lock: at 3 m a curled finger can flicker across its "extended"
+            # threshold and read as palm/hand/pinch for a frame. Cancel with the
+            # same hysteresis the pose gates use, so a real pose change still cancels
+            # within ~4 frames but sensor flicker does not.
+            self._not_point += 1
+            if self._not_point >= c.exit_frames:
+                self._reset_dwell(keep_lock=True)
 
-        hint = ("point to move, pinch to click" if c.click_mode == "pinch"
-                else "point to move, hold still to click")
         return Output(self.state, *self.pos, action=action, progress=progress,
-                      pose=pose, distance_cm=dist, hint=hint)
+                      pose=pose, distance_cm=dist,
+                      hint="point to move, hold still to click")

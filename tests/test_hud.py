@@ -16,7 +16,7 @@ from fake_hand import FakeHand                              # noqa: E402
 from gesture_cursor import Config, ControlState, CursorController  # noqa: E402
 from tracker import Frame                                   # noqa: E402
 
-EXTRA = {"speed": 0.4, "min_speed": 1.0, "click": "pinch", "dry": True}
+EXTRA = {"speed": 0.4, "min_speed": 1.0, "click": "hold still", "dry": True}
 
 
 def blank():

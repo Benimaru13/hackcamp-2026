@@ -21,8 +21,8 @@ DT = 1.0 / 30.0
 class Rig:
     """Tiny helper that drives a controller with a hand for N frames."""
 
-    def __init__(self, distance_m=1.0, click_mode="pinch", **cfg_kw):
-        cfg = Config(click_mode=click_mode, **cfg_kw)
+    def __init__(self, distance_m=1.0, **cfg_kw):
+        cfg = Config(**cfg_kw)
         self.ctrl = CursorController(cfg)
         self.cfg = cfg
         self.hand = FakeHand(pose="point", seed=5).at_distance(distance_m)
@@ -175,7 +175,9 @@ class ShakeTests(unittest.TestCase):
                      + (rig.ctrl.pos[1] - start[1]) ** 2) ** 0.5
             self.assertLess(drift, 12.0, f"{d} m: cursor drifted {drift:.1f} px")
 
-    def test_still_hand_never_clicks_in_pinch_mode(self):
+    def test_jitter_gives_one_click_at_most(self):
+        """A still pointing hand *is* the click gesture, so the worst jitter can do
+        is reach the single click; the post-click lock stops any repeat."""
         for d in (1.0, 3.0):
             rig = Rig(distance_m=d)
             rig.arm()
@@ -183,9 +185,8 @@ class ShakeTests(unittest.TestCase):
             rig.hand.jitter = 2.0 / 1280.0
             clicks = 0
             for _ in range(int(6.0 / DT)):
-                t_out = rig.run("point", DT)
-                clicks += t_out.action == "click"
-            self.assertEqual(clicks, 0, f"{d} m: false click from jitter")
+                clicks += rig.run("point", DT).action == "click"
+            self.assertEqual(clicks, 1, f"{d} m: {clicks} clicks from one hover")
 
     def test_slow_hand_motion_below_threshold_is_ignored(self):
         rig = Rig(distance_m=3.0)
@@ -207,41 +208,113 @@ class ShakeTests(unittest.TestCase):
 
 
 class ClickTests(unittest.TestCase):
-    def test_pinch_clicks_once_per_pinch(self):
+    def test_cursor_unsticks_from_the_anchor_after_a_click(self):
+        """The dwell pins the cursor to its anchor; without an un-pinned position
+        to measure against, the cursor stayed stuck there and a second hover could
+        never click."""
         rig = Rig(distance_m=3.0)
         rig.arm()
         rig.run("point", 0.4)
         clicks = 0
-        for _ in range(int(0.4 / DT)):         # held pinch
-            clicks += rig.run("pinch", DT).action == "click"
-        self.assertEqual(clicks, 1, "one pinch should be exactly one click")
-        rig.run("point", 0.6)
-        clicks = 0
-        for _ in range(int(0.4 / DT)):
-            clicks += rig.run("pinch", DT).action == "click"
-        self.assertEqual(clicks, 1, "second pinch should click again")
-
-    def test_no_click_when_pinch_has_no_pointing_context(self):
-        """Showing up already pinched (or waving with a pinch) must never click."""
-        rig = Rig(distance_m=3.0)
-        rig.arm()
-        clicks = 0
-        for _ in range(int(2.0 / DT)):
-            clicks += rig.run("pinch", DT).action == "click"
-        self.assertEqual(clicks, 0)
-
-    def test_pinch_freezes_the_cursor(self):
-        rig = Rig(distance_m=3.0)
-        rig.arm()
-        rig.run("point", 0.4)
+        for _ in range(int(2.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1)
         before = rig.ctrl.pos
-        rig.run("pinch", 0.4, dx=0.01)
-        moved = ((rig.ctrl.pos[0] - before[0]) ** 2
-                 + (rig.ctrl.pos[1] - before[1]) ** 2) ** 0.5
-        self.assertLess(moved, 20.0, f"cursor moved {moved:.1f} px while pinching")
+        rig.run("point", 0.6, dx=0.004)          # move away from the anchor
+        self.assertGreater(abs(rig.ctrl.pos[0] - before[0]), 50)
+        clicks = 0
+        for _ in range(int(2.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1, "a second hover should click again")
+
+    def test_dwell_releases_when_the_hand_moves_away(self):
+        """A click locks the dwell; moving the hand (and so the cursor) to a new
+        spot re-arms it, including after clicking near a screen edge."""
+        rig = Rig(distance_m=1.0)
+        rig.arm()
+        rig.run("point", 0.2)
+        rig.run("point", 0.3, dx=0.03)            # slam into the right edge
+        clicks = 0
+        for _ in range(int(2.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1)
+        rig.run("point", 0.8, dx=-0.02)           # move back, away from that spot
+        clicks = 0
+        for _ in range(int(2.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1, "a fresh hover should click again")
+
+    def test_holding_still_after_an_edge_click_never_clicks_again(self):
+        """At an edge the cursor is pinned, so its distance from the anchor never
+        reaches the radius: the lock has to be released by the hand moving away,
+        not by the cursor, or one hover would keep clicking."""
+        rig = Rig(distance_m=1.0)
+        rig.arm()
+        rig.run("point", 0.2)
+        rig.run("point", 0.3, dx=0.03)            # slam into the right edge
+        clicks = 0
+        for _ in range(int(6.0 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1, "the same hover must not click twice")
+
+    def test_a_single_misread_frame_does_not_cancel_the_dwell(self):
+        """At 3 m a finger can flicker across its extension threshold for a frame.
+        That must not wipe a half-finished countdown (or a click lock)."""
+        rig = Rig(distance_m=3.0)
+        rig.arm()
+        rig.run("point", 1.9)
+        rig.run("palm", DT)                       # one misread frame
+        clicks = 0
+        for _ in range(int(0.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1, "a one-frame misread must not restart the countdown")
+
+    def test_a_small_nudge_does_not_rearm_the_click(self):
+        """A couple of pixels of sensor-noise drift is not "moving to a new spot":
+        the click must stay locked until the hand really travels."""
+        rig = Rig(distance_m=3.0)
+        rig.arm()
+        rig.run("point", 0.2)
+        clicks = 0
+        for _ in range(int(2.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1)
+        rig.run("point", 0.4, dx=0.0004)          # ~0.13 palm: under every threshold
+        clicks = 0
+        for _ in range(int(3.0 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 0, "no second click without a real move")
+
+    def test_click_needs_the_live_point_pose(self):
+        """Only the pointing hand may click: a palm, fist or pinch must stay inert
+        however long it is held."""
+        for pose in ("palm", "fist", "pinch"):
+            rig = Rig(distance_m=3.0)
+            rig.arm()
+            rig.run("point", 0.4)
+            clicks = 0
+            for _ in range(int(3.0 / DT)):
+                clicks += rig.run(pose, DT).action == "click"
+            self.assertEqual(clicks, 0, f"{pose} should never click")
+
+    def test_dropping_the_point_pose_cancels_the_dwell(self):
+        """A half-finished dwell must not fire after the pose is gone."""
+        rig = Rig(distance_m=3.0)
+        rig.arm()
+        rig.run("point", 0.4)
+        rig.run("point", 1.5)                  # 1.5 s into the 2 s dwell
+        clicks = 0
+        for _ in range(int(1.5 / DT)):          # change pose before it expires
+            clicks += rig.run("palm", DT).action == "click"
+        self.assertEqual(clicks, 0)
+        rig.run("point", 0.4)                  # a fresh hover still works
+        clicks = 0
+        for _ in range(int(2.5 / DT)):
+            clicks += rig.run("point", DT).action == "click"
+        self.assertEqual(clicks, 1)
 
     def test_dwell_clicks_once_and_snaps_to_the_anchor(self):
-        rig = Rig(distance_m=3.0, click_mode="dwell")
+        rig = Rig(distance_m=3.0)
         rig.arm()
         rig.run("point", 0.4)
         anchor = rig.ctrl.pos
@@ -253,13 +326,21 @@ class ClickTests(unittest.TestCase):
                 + (rig.ctrl.pos[1] - anchor[1]) ** 2) ** 0.5
         self.assertLess(dist, 20.0)
 
-    def test_palm_pose_does_not_click_in_pinch_mode(self):
-        rig = Rig(distance_m=3.0)
-        rig.arm()
+    def test_a_two_second_point_hover_clicks_once(self):
+        """The click gesture: hover the pointing hand ~2 s, nothing else."""
+        ctrl = CursorController(Config())
+        hand = FakeHand(pose="palm", seed=11).at_distance(3.0)
+        t = 0.0
+        for _ in range(int(1.0 / DT)):
+            t += DT
+            ctrl.update(hand.landmarks(), now=t)
+        self.assertIs(ctrl.state, ControlState.ACTIVE)
+        hand.pose = "point"
         clicks = 0
-        for _ in range(int(2.0 / DT)):
-            clicks += rig.run("palm", DT).action == "click"
-        self.assertEqual(clicks, 0)
+        for _ in range(int(3.0 / DT)):
+            t += DT
+            clicks += ctrl.update(hand.landmarks(), now=t).action == "click"
+        self.assertEqual(clicks, 1, "a still pointing hand should click once")
 
 
 if __name__ == "__main__":
