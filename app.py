@@ -196,7 +196,6 @@ def main(argv=None):
     frames = detections = clicks = 0
     state = None
     t_start = time.monotonic()
-    last_swipe_time = 0.0
     try:
         while True:
             fr = tracker.read()
@@ -207,44 +206,6 @@ def main(argv=None):
             detections += bool(fr.detected)
 
             current_time = time.monotonic()
-
-            if fr.landmarks:
-
-                index_tip = fr.landmarks[8]
-                index_mcp = fr.landmarks[5]
-
-
-                middle_tip = fr.landmarks[12]
-                middle_mcp = fr.landmarks[9]
-
-
-                idx_dx = index_tip.x - index_mcp.x
-                idx_dy = index_tip.y - index_mcp.y
-
-                mid_dx = middle_tip.x - middle_mcp.x
-                mid_dy = middle_tip.y - middle_mcp.y
-
-
-                if abs(idx_dy) < 0.08 and abs(mid_dy) < 0.08:
-
-
-                    print(f"👀 正在检测双指... 食指 dx: {idx_dx:.3f} | 中指 dx: {mid_dx:.3f}")
-
-
-                    if current_time - last_swipe_time > 1.5:
-
-                        if idx_dx < -0.15 and mid_dx < -0.15:
-                            print(f"[{current_time - t_start:6.1f}s] ✌️ 👈 2-FINGER SWIPE RIGHT 触发！")
-                            if pyautogui is not None and not args.dry_run:
-                                pyautogui.hotkey('ctrl', 'right')
-                            last_swipe_time = current_time
-
-
-                        elif idx_dx > 0.15 and mid_dx > 0.15:
-                            print(f"[{current_time - t_start:6.1f}s] ✌️ 👉 2-FINGER SWIPE LEFT 触发！")
-                            if pyautogui is not None and not args.dry_run:
-                                pyautogui.hotkey('ctrl', 'left')
-                            last_swipe_time = current_time
 
 
             if out.state is not state:
