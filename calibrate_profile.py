@@ -91,6 +91,15 @@ class Profile:
                 f"calibrated at {self.distance_ft:.1f} ft")
 
 
+# profile field -> attribute names to try on the branch's Config, in order.
+# The screen-switch hold was called swipe_hold and is switch_hold now; older
+# branches still have the old name, newer ones the new one. Whichever exists is
+# the one that gets set, so the same profile works on both.
+_FIELD_ALIASES = {
+    "swipe_hold": ("swipe_hold", "switch_hold"),
+}
+
+
 def apply_to_config(cfg, profile: Profile):
     """Copy the profile's tuning onto a tracker Config (duck-typed).
 
@@ -100,8 +109,11 @@ def apply_to_config(cfg, profile: Profile):
     """
     for attr in ("min_speed", "min_cutoff", "beta", "dwell_time", "dwell_radius",
                  "arm_hold", "swipe_hold"):
-        if hasattr(cfg, attr):
-            setattr(cfg, attr, float(getattr(profile, attr)))
+        value = float(getattr(profile, attr))
+        for name in _FIELD_ALIASES.get(attr, (attr,)):
+            if hasattr(cfg, name):
+                setattr(cfg, name, value)
+                break
     cfg.dwell_radius = min(max(float(cfg.dwell_radius), 0.05), 0.60)
     if hasattr(cfg, "ref_palm"):
         cfg.ref_palm = min(max(float(profile.palm), 0.004), 0.5)

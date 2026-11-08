@@ -10,7 +10,8 @@ matter for the 10-foot demo:
                         same distance near and far?
 
 Run:  python simulate.py            (all scenarios)
-      python simulate.py still      (one scenario: still | move | tune | gestures)
+      python simulate.py still      (one scenario: still | move | tune | gestures |
+                                     switch | scroll | focus | cursor)
 """
 from __future__ import annotations
 
@@ -145,24 +146,61 @@ def scenario_scroll(distance_m=3.0, seconds=2.0):
     return rows
 
 
-def scenario_switch(distance_m=3.0):
-    """Screen switch: a sideways thumb held. Show when it fires, and that a thumb
-    left up cannot fire twice -- the return stroke failure that started this."""
-    from gesture_cursor import SwipeDetector
+def scenario_switch(distance_m=3.0, seconds=3.0):
+    """Screen switch: two fingers pointed left/right, held 0.55 s, then a 1 s rest.
+    Three seconds held, so the hold + rest cadence is visible."""
+    from gesture_cursor import SwitchDetector
     cfg = Config()
     rows = []
     for way in ("left", "right"):
-        det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
-        hand = FakeHand(pose="thumb_" + way).at_distance(distance_m)
+        det = SwitchDetector(cfg.switch_hold, cfg.switch_cooldown)
+        angle = math.pi / 2 if way == "left" else -math.pi / 2
+        hand = FakeHand(pose="two", angle=angle).at_distance(distance_m)
         t = 0.0
         fired = []
-        for _ in range(int(3.0 / DT)):          # three seconds, no release
+        for _ in range(int(seconds / DT)):      # held the whole time
             t += DT
             got = det.update(hand.landmarks(), t)
             if got:
                 fired.append((round(t, 2), got))
         rows.append((way, fired))
     return rows
+
+
+def scenario_focus(frame_w=1280, frame_h=720):
+    """Auto-zoom, camera-free: how much of the model's input does the hand fill
+    with the new focus crop, versus a whole-frame scan and a scan tile? That share
+    is what decides whether the detector can find the hand at all, and the crop
+    keeps it constant instead of letting it shrink with distance."""
+    from zoom import (TARGET_SIDE, box_of, hand_side, model_hand_share,
+                      plan_crop, scan_tiles, upscale_for, view_rect)
+    tiles = scan_tiles(frame_w, frame_h)
+    tile_k = min(upscale_for(t.short) for t in tiles)
+    rows = []
+    for d in (1.0, 1.5, 2.0, 3.0, 4.0):
+        box = box_of(FakeHand(pose="point").at_distance(d).landmarks(),
+                     frame_w, frame_h)
+        rect = plan_crop(box, frame_w, frame_h)
+        whole = hand_side(box) * upscale_for(frame_h) / TARGET_SIDE
+        rows.append({
+            "distance_m": d,
+            "hand_px": hand_side(box),
+            "crop_px": rect.side,
+            "zoom": upscale_for(rect.short),
+            "focus": model_hand_share(box, rect),
+            "whole": whole,
+            "tile": hand_side(box) * tile_k / TARGET_SIDE,
+            "preview": frame_w / view_rect(rect.center, rect.side, frame_w, frame_h).w,
+        })
+    return rows
+
+
+def scenario_cursor():
+    """Aiming reticle radius against camera distance (what the HUD draws with the
+    pointing hand live)."""
+    from gesture_cursor import cursor_radius_px
+    cfg = Config()
+    return [(d, cursor_radius_px(d * 100.0, cfg)) for d in (0.5, 1.0, 1.5, 2.0, 3.0, 4.0)]
 
 
 def scenario_tune():
@@ -234,13 +272,32 @@ def main(argv):
         print()
 
     if which in ("all", "switch"):
-        print("screen switch: sideways thumb held at 3 m, held 3 s without releasing")
+        print("screen switch: two fingers pointed left/right at 3 m, held 3 s "
+              "(0.55 s hold, then a 1 s rest)")
         for way, fired in scenario_switch():
             if fired:
-                when = ", ".join(f"{t:.2f}s '{d}'" for t, d in fired)
-                print(f"  thumb {way:<5}: {len(fired)} command(s) at {when}")
+                when = ", ".join(f"{t:.2f}s" for t, _ in fired)
+                print(f"  two {way:<5}: {len(fired)} command(s) at {when}")
             else:
-                print(f"  thumb {way:<5}: never fired")
+                print(f"  two {way:<5}: never fired")
+        print()
+
+    if which in ("all", "focus"):
+        print("auto-zoom at 1280x720 (share = how much of the model input the hand "
+              "fills, which is what decides if it is findable)")
+        for r in scenario_focus():
+            print(f"  {r['distance_m']:.1f} m: hand {r['hand_px']:4.0f} px -> crop "
+                  f"{r['crop_px']:4.0f} px at {r['zoom']:.1f}x: fills "
+                  f"{r['focus'] * 100:3.0f}%  (whole-frame scan "
+                  f"{r['whole'] * 100:3.0f}%, one scan tile {r['tile'] * 100:3.0f}%), "
+                  f"preview {r['preview']:.1f}x")
+        print()
+
+    if which in ("all", "cursor"):
+        print("aiming reticle radius vs distance (HUD, pointing hand, ACTIVE only)")
+        for d, r in scenario_cursor():
+            print(f"  {d:.1f} m: {r:4.1f} px radius")
+        print()
 
     return 0
 

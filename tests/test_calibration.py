@@ -86,6 +86,10 @@ def test_calibration_can_never_be_twitchier_than_the_defaults():
     from gesture_cursor import Config
 
     base = Config()
+    # The screen-switch hold is swipe_hold on older branches, switch_hold on the
+    # current one; whichever the branch has is the one that must be floored.
+    holds = [n for n in ("swipe_hold", "switch_hold") if hasattr(base, n)]
+    assert holds, "Config has no screen-switch hold at all"
     for jitter in (0.0, 1.0, 3.0, 20.0):
         cfg = apply_to_config(Config(), Profile.from_measurement(
             palm=0.04, jitter_px=jitter, distance_ft=10.0))
@@ -93,7 +97,8 @@ def test_calibration_can_never_be_twitchier_than_the_defaults():
         assert cfg.dwell_time >= base.dwell_time
         assert cfg.dwell_radius >= base.dwell_radius
         assert cfg.arm_hold >= base.arm_hold
-        assert cfg.swipe_hold >= base.swipe_hold
+        for name in holds:
+            assert getattr(cfg, name) >= getattr(base, name)
         assert cfg.beta <= base.beta
         assert cfg.min_cutoff <= base.min_cutoff
 
@@ -141,14 +146,16 @@ def test_profile_keys_match_the_tracker_config():
 
     names = {field.name for field in dataclasses.fields(Config)}
     assert {"min_speed", "min_cutoff", "beta", "dwell_time", "dwell_radius",
-            "arm_hold", "swipe_hold"} <= names
+            "arm_hold"} <= names
+    assert {"swipe_hold", "switch_hold"} & names, "screen-switch hold missing"
 
     profile = Profile.from_measurement(
         palm=0.04, jitter_px=6.0, distance_ft=8.0,
         tremor=TremorProfile(freq_hz=5.0, amplitude_px=6.0, rms_px=6.0, score=37))
     cfg = apply_to_config(Config(), profile)
     assert cfg.arm_hold == pytest.approx(profile.arm_hold)
-    assert cfg.swipe_hold == pytest.approx(profile.swipe_hold)
+    hold = "swipe_hold" if hasattr(cfg, "swipe_hold") else "switch_hold"
+    assert getattr(cfg, hold) == pytest.approx(profile.swipe_hold)
 
 
 def test_the_wizard_runs_headless_and_writes_a_profile(tmp_path):

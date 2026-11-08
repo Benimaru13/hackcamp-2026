@@ -74,6 +74,15 @@ class Config:
     still_palm: float = 0.15     # hand travel that must back a cursor move (palm-lengths)
     post_click_lock: bool = True
 
+    # --- aiming reticle that grows with distance (HUD only) ----------------
+    # At 3-4 m a 6 px dot is invisible from the sofa, and up close a huge ring would
+    # just hide the thing being pointed at. The reticle is lerped between these two
+    # sizes by the camera distance, so it is small at 1 m and big at 4 m.
+    cursor_near_px: float = 14.0   # radius at cursor_near_cm or closer
+    cursor_far_px: float = 46.0    # radius at cursor_far_cm or further
+    cursor_near_cm: float = 80.0
+    cursor_far_cm: float = 320.0
+
     # --- state machine ---------------------------------------------------
     arm_hold: float = 0.55       # the open palm held this long arms control
     palm_upright: float = PALM_UPRIGHT  # how upright an arming palm has to be
@@ -87,9 +96,14 @@ class Config:
     scroll_hold: float = 0.20    # hold the V up/down this long before scrolling
     scroll_interval: float = 0.15  # then one wheel step this often
 
-    # --- screen switch: sideways thumb held ------------------------------
-    swipe_hold: float = 0.75     # hold a sideways thumb this long for one command
-    swipe_cooldown: float = 1.0  # then ignore the gesture this long
+    # --- screen switch: two fingers pointing left or right ----------------
+    # The sideways thumb that used to sit here is gone: a thumb held out is also a
+    # curled hand, so it kept reading as the stop fist and released control halfway
+    # through its own hold. Two extended fingers are the one thing that still reads
+    # at 3-4 m, and pointing them sideways is the scroll gesture turned a quarter
+    # turn, so the two can never be confused.
+    switch_hold: float = 0.55     # hold the sideways V this long for one command
+    switch_cooldown: float = 1.0  # then rest this long before input counts again
 
     # --- misc ------------------------------------------------------------
     palm_cm: float = 9.0         # assumed palm length, only for the distance readout
@@ -185,10 +199,10 @@ def is_pointing(lm):
 def two_finger_direction(lm):
     """Which way an index+middle V points: "up", "down", "left" or "right".
 
-    Only the up/down halves are used now (slow scroll); the sideways halves are
-    the honest reading of the pose. Requiring exactly those two fingers to be
-    extended keeps an open palm, a fist and a single-finger point from ever
-    triggering it.
+    Up/down is the slow scroll; left/right is the screen switch, so one pose
+    carries both and the direction decides which one you get. Requiring exactly
+    those two fingers to be extended keeps an open palm, a fist and a
+    single-finger point from ever triggering either.
     """
     if lm is None:
         return None
@@ -289,12 +303,12 @@ def is_fist(lm):
 
 
 def classify_pose(lm):
-    """Single label for the HUD. Precedence: side thumb (screen switch) beats
-    fist (stop) beats pinch beats palm (arm) beats point (move).
+    """Single label for the HUD. Precedence: side thumb, then the two-finger
+    screen switch, then fist (stop), pinch, palm (arm), point (move).
 
-    The side thumb has to come before the fist: a thumb held out is also a curled
-    hand, so reading it as a fist would make the screen switch release control
-    halfway through its own hold. The palm is reported whenever the hand is open;
+    The side thumb still comes before the fist even though the switch is now the
+    two-finger point: a thumb held out is also a curled hand, and reading it as a
+    fist releases control for nothing. The palm is reported whenever the hand is open;
     whether it is upright enough to actually arm is checked separately
     (is_arm_pose), the same way the fist is only the stop gesture while ACTIVE.
     """
@@ -303,6 +317,9 @@ def classify_pose(lm):
     side = thumb_direction(lm)
     if side:
         return "thumb_" + side
+    v = two_finger_direction(lm)
+    if v in ("left", "right"):
+        return "two_" + v
     if is_fist(lm):
         return "fist"
     if pinch_gap(lm) < PINCH_RATIO:
@@ -323,6 +340,26 @@ def estimate_distance_cm(lm, frame_w, cfg: Config | None = None):
         return 0.0
     f_px = (frame_w / 2.0) / math.tan(math.radians(cfg.hfov_deg) / 2.0)
     return f_px * cfg.palm_cm / (s * frame_w)
+
+
+def cursor_radius_px(distance_cm, cfg: Config | None = None):
+    """Radius of the HUD aiming reticle, in frame pixels: small near the camera,
+    large far away, eased between `cursor_near_cm` and `cursor_far_cm` and clamped
+    outside that range so it never vanishes up close or swallows the screen.
+
+    HUD only, and pure maths: app.py draws the number this returns while the
+    pointing hand is live, so the guide you aim with stays visible from 3-4 m.
+    (The OS pointer itself belongs to the system and cannot be resized.)
+    """
+    cfg = cfg or Config()
+    lo, hi = cfg.cursor_near_cm, cfg.cursor_far_cm
+    if not distance_cm or distance_cm <= 0:
+        return cfg.cursor_near_px
+    if hi <= lo:
+        return cfg.cursor_far_px
+    t = min(max((distance_cm - lo) / (hi - lo), 0.0), 1.0)
+    t = t * t * (3.0 - 2.0 * t)          # ease in/out: no visible jump at either end
+    return cfg.cursor_near_px + t * (cfg.cursor_far_px - cfg.cursor_near_px)
 
 
 # ---------------------------------------------------------------- debouncer
@@ -368,30 +405,34 @@ class Gate:
         return 0.0
 
 
-class SwipeDetector:
-    """Screen switch: hold a sideways thumb, get exactly one command.
+class SwitchDetector:
+    """Screen switch: point two fingers left or right, hold, get one command.
 
-    Two earlier readings of this gesture failed on the demo table, both because
-    they were *strokes*. Firing on the angle of the two-finger V fired with the
-    hand standing still. Firing on sideways travel then fired on the return
-    stroke as well -- the hand comes back to where it started within a second,
-    so one swipe became two commands, or the wrong one if the first was missed.
+    This gesture has to be a HOLD, not a stroke. The two earlier versions fired on
+    strokes and both misread the hand: firing on the angle of the two-finger V
+    fired with the hand standing still, and firing on sideways travel fired on the
+    return stroke too -- the hand comes back to where it started within a second,
+    so one swipe became two commands, or the wrong one if the first was missed. A
+    hold has no return stroke to misread.
 
-    A hold has no stroke to misread: point the thumb left or right with the other
-    fingers curled and hold it `hold` seconds. After it fires the hand has to
-    drop the pose and `cooldown` seconds have to pass, so a thumb left held up
-    can never repeat, and the natural "put my hand back" motion is not input at
-    all. A few dropped detector frames (up to `grace` seconds) do not restart the
-    hold; a direction flip does.
+    The sideways thumb that replaced those strokes is gone as well: a thumb held
+    out is also a curled hand, so it read as the stop fist and released control
+    halfway through its own hold. Two extended fingers never read as a fist, and
+    they are the gesture that still survives at 4 m.
+
+    Sequence: point the V left or right and hold `hold` seconds -> one command.
+    Then the detector rests for `cooldown` seconds, ignoring input entirely, before
+    it starts looking again -- so keeping the V up repeats the command every
+    hold + cooldown (0.55 s + 1 s) and letting go costs nothing. A direction flip
+    restarts the hold, and a couple of dropped frames (`grace`) do not.
     """
 
-    def __init__(self, hold=0.75, cooldown=1.0, grace=0.2):
+    def __init__(self, hold=0.55, cooldown=1.0, grace=0.2):
         self.hold, self.cooldown, self.grace = hold, cooldown, grace
         self._dir = None
         self._t0 = 0.0
         self._seen = -1e9
         self._ready_at = -1e9
-        self._must_release = False
 
     def reset(self):
         self._dir = None
@@ -406,26 +447,24 @@ class SwipeDetector:
 
     def update(self, lm, now):
         """"left" / "right" on the frame the hold completes, else None."""
-        way = thumb_direction(lm)
-        if way is None:
+        way = two_finger_direction(lm)
+        if way not in ("left", "right"):
             if self._dir is not None and now - self._seen <= self.grace:
                 return None                # a blink at 3 m, not a release
             self.reset()
-            self._must_release = False
             return None
-        if self._must_release:
-            return None                    # release first: a held thumb never repeats
         if now < self._ready_at:
-            self.reset()
+            self.reset()                   # resting: input is not being looked at
             return None
         if way != self._dir:
             self._dir, self._t0, self._seen = way, now, now
-            return None
+            return None                    # a direction flip restarts the hold
         self._seen = now
         if now - self._t0 < self.hold:
             return None
+        # Fired. The rest starts now: nothing counts until it is over, so a hand
+        # left pointing switches again every hold + cooldown and no faster.
         self._ready_at = now + self.cooldown
-        self._must_release = True
         self.reset()
         return way
 
@@ -714,7 +753,12 @@ class CursorController:
                 # Unfolding the palm into a point moves the fingertip half a palm in
                 # one frame; re-seed the smoothing so it cannot jump the cursor.
                 self._reset_tracking()
-            if self._move_relative(lm, now, apply=self._g_point.on):
+            # Follow the LIVE point pose, not the debounced gate: the gate keeps
+            # itself open for a few frames after the pose changes, and landmark 8
+            # jumps half a hand when the fingers fold, so changing gesture used to
+            # yank the pointer by up to max_jump_px per frame on the way out.
+            if self._move_relative(lm, now,
+                                   apply=self._g_point.on and pose == "point"):
                 action = "move"
 
         # The click belongs to the point gesture only, so the dwell runs on the

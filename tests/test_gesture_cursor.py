@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_hand import FakeHand                             # noqa: E402
 from gesture_cursor import (                               # noqa: E402
-    Config, ControlState, CursorController, ScrollDetector, SwipeDetector,
+    Config, ControlState, CursorController, ScrollDetector, SwitchDetector,
     classify_pose, is_arm_pose, is_fist, is_open_palm, is_pointing, pinch_gap,
     thumb_direction, two_finger_direction)
 
@@ -495,95 +495,114 @@ class ScrollTests(unittest.TestCase):
         self.assertFalse(any(steps), "a reversal fired immediately")
 
 
-class SwipeTests(unittest.TestCase):
-    """Screen switch: a sideways thumb HELD for 0.75 s. The two stroke-based
-    readings before it (the V's angle, then sideways travel) both misread the
-    hand: one fired with no movement, the other fired again on the return."""
+class SwitchTests(unittest.TestCase):
+    """Screen switch: two fingers pointed left or right and HELD 0.55 s, then a
+    1 s rest. The two stroke-based readings before it (the V's angle, then
+    sideways travel) both misread the hand: one fired with no movement, the other
+    fired again on the return. The sideways thumb that came between them read as
+    the stop fist and released control mid-hold."""
 
-    def hold(self, way, seconds=1.2, distance_m=3.0):
-        det = SwipeDetector()
-        hand = FakeHand(pose="thumb_" + way, seed=2).at_distance(distance_m)
-        t = 0.0
+    def hand(self, way, distance_m=3.0):
+        angle = math.pi / 2 if way == "left" else -math.pi / 2
+        return FakeHand(pose="two", angle=angle, seed=2).at_distance(distance_m)
+
+    def run_for(self, det, hand, t, seconds):
+        """Feed `hand` (or None) for `seconds`; return the new clock and the fires."""
         fired = []
-        for _ in range(int(seconds / DT)):
+        for _ in range(int(round(seconds / DT))):
             t += DT
-            fired.append(det.update(hand.landmarks(), t))
-        return [f for f in fired if f]
+            got = det.update(None if hand is None else hand.landmarks(), t)
+            if got:
+                fired.append((round(t, 2), got))
+        return t, fired
 
-    def test_a_held_thumb_fires_once_each_way(self):
-        self.assertEqual(self.hold("right"), ["right"])
-        self.assertEqual(self.hold("left"), ["left"])
+    def test_each_direction_fires_once_after_the_hold(self):
+        for way in ("left", "right"):
+            _, fired = self.run_for(SwitchDetector(), self.hand(way), 0.0, 1.0)
+            self.assertEqual([d for _, d in fired], [way], way)
 
     def test_the_hold_has_to_finish(self):
-        self.assertEqual(self.hold("right", seconds=0.6), [], "fired before 0.75 s")
-        self.assertEqual(self.hold("right", seconds=0.9), ["right"])
+        _, early = self.run_for(SwitchDetector(), self.hand("left"), 0.0, 0.45)
+        self.assertEqual(early, [], "fired before 0.55 s")
+        _, later = self.run_for(SwitchDetector(), self.hand("left"), 0.0, 0.7)
+        self.assertEqual([d for _, d in later], ["left"])
+        self.assertGreaterEqual(later[0][0], 0.55)
 
     def test_the_switch_works_from_up_close_to_10ft(self):
         for d in (1.0, 2.0, 3.0):
-            self.assertEqual(self.hold("left", distance_m=d), ["left"], f"{d} m")
-            self.assertEqual(self.hold("right", distance_m=d), ["right"], f"{d} m")
+            for way in ("left", "right"):
+                _, fired = self.run_for(SwitchDetector(), self.hand(way, d), 0.0, 1.0)
+                self.assertEqual([x for _, x in fired], [way], f"{d} m {way}")
 
     def test_no_other_pose_can_fire_it(self):
-        for pose in ("palm", "fist", "point", "two", "pinch", "relaxed"):
-            det = SwipeDetector()
-            hand = FakeHand(pose=pose).at_distance(3.0)
-            out = [det.update(hand.landmarks(), i * DT) for i in range(90)]
-            self.assertFalse(any(out), f"{pose} fired the screen switch")
+        up = FakeHand(pose="two", angle=0.0).at_distance(3.0)
+        down = FakeHand(pose="two", angle=math.pi).at_distance(3.0)
+        for hand in (FakeHand(pose=p).at_distance(3.0)
+                     for p in ("palm", "fist", "point", "pinch", "relaxed")):
+            _, fired = self.run_for(SwitchDetector(), hand, 0.0, 2.0)
+            self.assertFalse(fired, "a non-sideways pose fired the screen switch")
+        for hand in (up, down):                # the scroll half of the same pose
+            _, fired = self.run_for(SwitchDetector(), hand, 0.0, 2.0)
+            self.assertFalse(fired, "scrolling fired the screen switch")
 
-    def test_a_held_thumb_never_repeats(self):
-        """The complaint that started this: leaving the hand up must not send a
-        second command, and a return stroke must not exist at all."""
-        self.assertEqual(self.hold("right", seconds=3.0), ["right"])
+    def test_it_rests_a_second_before_looking_again(self):
+        """After the command the detector is blind for 1 s: the interruption that
+        used to become a second, opposite command is ignored completely."""
+        det = SwitchDetector()
+        left = self.hand("left")
+        t, fired = self.run_for(det, left, 0.0, 0.7)
+        self.assertEqual([d for _, d in fired], ["left"])
+        t, during = self.run_for(det, self.hand("right"), t, 0.8)
+        self.assertEqual(during, [], "fired again during the 1 s rest")
+        t, after = self.run_for(det, self.hand("right"), t, 0.8)
+        self.assertEqual([d for _, d in after], ["right"], "never came back after the rest")
 
-    def test_the_thumb_never_releases_control(self):
-        """It is also a curled hand. If it counted as the stop fist, the switch
-        would drop control halfway through its own hold."""
-        rig = Rig(distance_m=3.0)
-        rig.arm()
-        out = rig.run("thumb_right", 1.5)
-        self.assertEqual(out.state, ControlState.ACTIVE)
-        self.assertEqual(out.pose, "thumb_right")
+    def test_a_held_gesture_repeats_no_faster_than_hold_plus_rest(self):
+        """Keeping the V up is allowed to repeat -- but only every 1.55 s, which
+        is the hold plus the rest."""
+        _, fired = self.run_for(SwitchDetector(), self.hand("left"), 0.0, 3.0)
+        self.assertEqual([d for _, d in fired], ["left", "left"])
+        self.assertGreaterEqual(fired[1][0] - fired[0][0], 1.5)
 
     def test_direction_flip_restarts_the_hold(self):
-        det = SwipeDetector()
-        hand = FakeHand(pose="thumb_right").at_distance(3.0)
-        t = 0.0
-        fired = []
-        for pose in ("thumb_right", "thumb_left"):
-            hand.pose = pose
-            for _ in range(int(0.5 / DT)):
-                t += DT
-                fired.append(det.update(hand.landmarks(), t))
-        self.assertFalse(any(fired), "flipping direction counted as a hold")
+        det = SwitchDetector()
+        left, right = self.hand("left"), self.hand("right")
+        t, a = self.run_for(det, left, 0.0, 0.4)
+        t, b = self.run_for(det, right, t, 0.4)
+        t, c = self.run_for(det, left, t, 0.4)
+        self.assertFalse(a or b or c, "flipping direction counted as a hold")
 
     def test_a_blink_does_not_restart_the_hold(self):
-        det = SwipeDetector()
-        hand = FakeHand(pose="thumb_right").at_distance(3.0)
-        t = 0.0
-        fired = []
-        for _ in range(int(0.5 / DT)):
-            t += DT
-            fired.append(det.update(hand.landmarks(), t))
-        for _ in range(2):                     # two dropped frames at 3 m
-            t += DT
-            fired.append(det.update(None, t))
-        for _ in range(int(0.5 / DT)):
-            t += DT
-            fired.append(det.update(hand.landmarks(), t))
-        self.assertEqual([f for f in fired if f], ["right"])
+        det = SwitchDetector()
+        hand = self.hand("left")
+        t, a = self.run_for(det, hand, 0.0, 0.4)
+        t, b = self.run_for(det, None, t, 2 * DT)      # two dropped frames at 3 m
+        t, c = self.run_for(det, hand, t, 0.3)
+        self.assertEqual([d for _, d in a + b + c], ["left"])
 
-    def test_a_second_hold_after_release_fires_again(self):
-        det = SwipeDetector()
-        hand = FakeHand(pose="thumb_right").at_distance(3.0)
-        t = 0.0
-        fired = []
-        for pose, seconds in (("thumb_right", 1.2), ("fist", 0.3),
-                              ("thumb_right", 1.2)):
-            hand.pose = pose
-            for _ in range(int(seconds / DT)):
-                t += DT
-                fired.append(det.update(hand.landmarks(), t))
-        self.assertEqual([f for f in fired if f], ["right", "right"])
+    def test_the_switch_never_releases_control(self):
+        """Two extended fingers are not a fist, and not an open palm: holding the
+        switch must not drop control or re-arm anything."""
+        rig = Rig(distance_m=3.0)
+        rig.arm()
+        rig.hand.angle = math.pi / 2
+        out = rig.run("two", 1.5)
+        self.assertEqual(out.state, ControlState.ACTIVE)
+        self.assertEqual(out.pose, "two_left")
+
+    def test_holding_the_switch_does_not_move_the_cursor_or_scroll(self):
+        rig = Rig(distance_m=3.0)
+        rig.arm()
+        rig.run("point", 0.3)
+        before = rig.ctrl.pos
+        rig.hand.angle = math.pi / 2
+        out = rig.run("two", 1.5)
+        self.assertNotEqual(out.action, "move")
+        self.assertNotEqual(out.action, "click")
+        self.assertEqual(rig.ctrl.pos, before)
+        det = ScrollDetector()
+        hand = self.hand("left")
+        self.assertFalse(any(det.update(hand.landmarks(), i * DT) for i in range(60)))
 
 
 if __name__ == "__main__":
