@@ -6,3 +6,6 @@ _app_run.log
 .env
 .env.*
 !.env.example
+
+# personal calibration written by `python calibrate.py`
+profile.json

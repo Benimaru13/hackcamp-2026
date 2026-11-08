@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "AirTrack: calibrate",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/calibrate.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "AirTrack: calibrate (simulated hand, no camera)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/calibrate.py",
+      "args": ["--simulate"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
