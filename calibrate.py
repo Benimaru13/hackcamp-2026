@@ -11,13 +11,18 @@ so you can stand back and keep your hands in the air for the whole thing.
     2. hold still for 4 s      -- how much your hand shakes (the jitter score)
     3. keep pointing for 4 s   -- how big your hand looks from here (reference)
 
-It writes profile.json next to this file. AirTrack itself is the other branches'
-code and is untouched here, so applying the profile there is a three-line change
--- see CALIBRATION.md.
+It writes profile.json next to this file. `python start.py` runs this wizard when
+no profile exists yet, and drops straight into controlling the computer when it
+finishes.
+
+The screen keeps the reading of the web mock: near-black canvas, one teal accent,
+a status panel listing the three steps with a single large instruction, and a
+countdown ring on your fingertip.
 """
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 
@@ -32,6 +37,23 @@ ARM_SECONDS = 0.6
 STILL_SECONDS = 4.0
 REF_SECONDS = 4.0
 WIN = "AirTrack calibration"
+
+# --- the look ---------------------------------------------------------------
+BG = (18, 14, 11)         # near-black with a faint blue cast (BGR)
+PANEL = (31, 27, 23)
+INK = (240, 238, 234)
+MUTED = (150, 145, 138)
+DIM = (70, 66, 61)
+RULE = (46, 41, 36)
+ACCENT = (212, 234, 94)   # teal
+VIOLET = (250, 159, 176)
+FONT = cv2.FONT_HERSHEY_DUPLEX
+
+STEPS = (
+    ("Raise an open palm", "camera check - stand about 3 m back"),
+    ("Hold still", "how much your hand shakes"),
+    ("Keep pointing", "your hand's size at this distance"),
+)
 
 
 class _Camera:
@@ -69,19 +91,157 @@ class _Sim:
         pass
 
 
-def _bar(image, progress, text, color=(90, 255, 120)):
-    """Progress strip along the bottom: the only UI the wizard needs."""
-    h, w = image.shape[:2]
-    cv2.rectangle(image, (0, h - 96), (w, h), (24, 24, 24), -1)
-    cv2.putText(image, text, (24, h - 60), cv2.FONT_HERSHEY_DUPLEX, 0.62,
-                (235, 235, 235), 1, cv2.LINE_AA)
-    cv2.rectangle(image, (24, h - 40), (w - 24, h - 24), (60, 60, 60), -1)
-    filled = int((w - 48) * max(0.0, min(progress, 1.0)))
+# ------------------------------------------------------------------ drawing
+def _arc(img, center, radius, fraction, color, thickness=3):
+    """Progress ring, drawn as a polyline (cv2.ellipse's angle args are a trap)."""
+    frac = max(0.0, min(float(fraction), 1.0))
+    if frac <= 0.0:
+        return
+    n = max(3, int(48 * frac) + 3)
+    pts = [(int(center[0] + radius * math.cos(-math.pi / 2 + 2 * math.pi * frac * i / n)),
+            int(center[1] + radius * math.sin(-math.pi / 2 + 2 * math.pi * frac * i / n)))
+           for i in range(n + 1)]
+    cv2.polylines(img, [np.array(pts, dtype=np.int32)], False, color, thickness,
+                  cv2.LINE_AA)
+
+
+def _fit(img, w, h):
+    """Letterbox an image into a w x h area: returns (canvas, x0, y0, scale)."""
+    ih, iw = img.shape[:2]
+    k = min(w / max(iw, 1), h / max(ih, 1))
+    nw, nh = max(1, int(iw * k)), max(1, int(ih * k))
+    out = np.full((h, w, 3), BG, np.uint8)
+    x0, y0 = (w - nw) // 2, (h - nh) // 2
+    out[y0:y0 + nh, x0:x0 + nw] = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
+    return out, x0, y0, k
+
+
+def _check(img, x, y, color):
+    pts = np.array([(x - 4, y), (x - 1, y + 3), (x + 5, y - 4)], dtype=np.int32)
+    cv2.polylines(img, [pts], False, color, 2, cv2.LINE_AA)
+
+
+def _wrap(text, width):
+    lines, cur = [], ""
+    for word in text.split():
+        if len(cur) + len(word) + 1 > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = (cur + " " + word).strip()
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def render(image, step, progress, hint, chips=None, landmarks=None, mirror=True):
+    """The calibration screen: camera on the left, status panel on the right."""
+    chips = chips or {}
+    h, w = (image.shape[:2] if image is not None else (720, 1280))
+    canvas = np.full((h, w, 3), BG, np.uint8)
+    pw = max(300, min(int(w * 0.36), 430))
+    vw = max(w - pw, 1)
+
+    if image is not None:
+        fitted, x0, y0, k = _fit(image, vw, h)
+        canvas[:, :vw] = (fitted * 0.86).astype(np.uint8)
+        src_h, src_w = image.shape[:2]
+        if landmarks:
+            pts = []
+            for p in landmarks:
+                fx = (1.0 - p.x) if mirror else p.x
+                pts.append((x0 + int(fx * src_w * k), y0 + int(p.y * src_h * k)))
+            for (px_, py_) in pts:
+                cv2.circle(canvas, (px_, py_), 2, (250, 250, 250), -1, cv2.LINE_AA)
+            cx, cy = pts[8]
+            cv2.circle(canvas, (cx, cy), 36, ACCENT, 2, cv2.LINE_AA)
+            _arc(canvas, (cx, cy), 36, progress, ACCENT, 3)
+            cv2.circle(canvas, (cx, cy), 5, ACCENT, -1, cv2.LINE_AA)
+
+    px0 = vw
+    cv2.rectangle(canvas, (px0, 0), (w, h), PANEL, -1)
+    cv2.line(canvas, (px0, 0), (px0, h), RULE, 1)
+    pad = 26
+    cv2.putText(canvas, "AIRTRACK", (px0 + pad, pad + 20), FONT, 0.66, ACCENT, 2,
+                cv2.LINE_AA)
+    cv2.putText(canvas, "CALIBRATION", (px0 + pad, pad + 44), FONT, 0.42, MUTED, 1,
+                cv2.LINE_AA)
+
+    y = pad + 100
+    for i, (title, sub) in enumerate(STEPS):
+        done, active = step > i, step == i
+        mark = ACCENT if active else (VIOLET if done else DIM)
+        cv2.circle(canvas, (px0 + pad + 13, y - 5), 13, mark,
+                   -1 if (active or done) else 1, cv2.LINE_AA)
+        if done:
+            _check(canvas, px0 + pad + 13, y - 5, BG)
+        else:
+            num = str(i + 1)
+            (tw, th), _ = cv2.getTextSize(num, FONT, 0.40, 1)
+            cv2.putText(canvas, num, (px0 + pad + 13 - tw // 2, y - 5 + th // 2),
+                        FONT, 0.40, INK if active else MUTED, 1, cv2.LINE_AA)
+        cv2.putText(canvas, title, (px0 + pad + 38, y), FONT, 0.52,
+                    INK if active else ((200, 196, 190) if done else MUTED), 1,
+                    cv2.LINE_AA)
+        cv2.putText(canvas, sub, (px0 + pad + 38, y + 18), FONT, 0.36, MUTED, 1,
+                    cv2.LINE_AA)
+        y += 58
+
+    y += 10
+    cv2.line(canvas, (px0 + pad, y - 14), (w - pad, y - 14), RULE, 1)
+    for line in _wrap(hint, 26)[:3]:
+        cv2.putText(canvas, line, (px0 + pad, y + 10), FONT, 0.58, INK, 1, cv2.LINE_AA)
+        y += 26
+
+    cy = h - 88
+    for key, value in chips.items():
+        text = f"{key}  {value}"
+        (tw, th), _ = cv2.getTextSize(text, FONT, 0.40, 1)
+        cv2.rectangle(canvas, (px0 + pad, cy - th - 8),
+                      (px0 + pad + tw + 20, cy + 8), (44, 39, 34), -1, cv2.LINE_AA)
+        cv2.rectangle(canvas, (px0 + pad, cy - th - 8),
+                      (px0 + pad + tw + 20, cy + 8), (60, 55, 49), 1, cv2.LINE_AA)
+        cv2.putText(canvas, text, (px0 + pad + 10, cy), FONT, 0.40, INK, 1,
+                    cv2.LINE_AA)
+        cy -= 32
+
+    by = h - 30
+    cv2.rectangle(canvas, (px0 + pad, by), (w - pad, by + 6), (52, 47, 42), -1)
+    span = max((w - pad) - (px0 + pad), 1)
+    filled = int(span * max(0.0, min(progress, 1.0)))
     if filled > 0:
-        cv2.rectangle(image, (24, h - 40), (24 + filled, h - 24), color, -1)
-    return image
+        cv2.rectangle(canvas, (px0 + pad, by), (px0 + pad + filled, by + 6), ACCENT, -1)
+    cv2.putText(canvas, "nothing to press  -  Esc cancels", (px0 + pad, by - 12),
+                FONT, 0.34, MUTED, 1, cv2.LINE_AA)
+    return canvas
 
 
+def render_done(image, profile):
+    """The card shown for a moment after the third measurement."""
+    h, w = (image.shape[:2] if image is not None else (720, 1280))
+    if image is not None:
+        fitted, _, _, _ = _fit(image, w, h)
+        canvas = (fitted * 0.30).astype(np.uint8)
+    else:
+        canvas = np.full((h, w, 3), BG, np.uint8)
+    cx = w // 2
+    ty = h // 2 - 60
+    rows = (
+        ("Calibrated", ty, 1.15, ACCENT, 2),
+        (f"{profile.jitter_score}/100 steady   -   {profile.jitter_px:.1f} px of shake",
+         ty + 46, 0.52, INK, 1),
+        (f"dwell {profile.dwell_time:.2f} s   -   min speed {profile.min_speed:.2f}"
+         f"   -   {profile.distance_ft:.1f} ft", ty + 76, 0.46, MUTED, 1),
+        ("Taking control of your computer...", ty + 126, 0.52, INK, 1),
+    )
+    for text, y, scale, color, thick in rows:
+        (tw, _), _ = cv2.getTextSize(text, FONT, scale, thick)
+        cv2.putText(canvas, text, (cx - tw // 2, y), FONT, scale, color, thick,
+                    cv2.LINE_AA)
+    return canvas
+
+
+# ------------------------------------------------------------------ wizard
 def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     preview=True, width=1280, height=720, distance_m=3.0):
     """Run the wizard, save the profile, and return it (None if cancelled)."""
@@ -95,10 +255,15 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
     arm_since = None
     last_lm = None
     last_image = None
+    step_index = {"arm": 0, "still": 1, "ref": 2}
 
     if show:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WIN, 900, 520)
+        cv2.resizeWindow(WIN, 1040, 585)
+        try:
+            cv2.setWindowProperty(WIN, cv2.WND_PROP_TOPMOST, 1)
+        except Exception:
+            pass
     print("Calibrating. Raise an open palm toward the camera, then keep still "
           "when asked.\nNothing to press: each step moves on by itself.\n")
 
@@ -119,7 +284,7 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     arm_since = None
                 progress = (0.0 if arm_since is None
                             else min((now - arm_since) / ARM_SECONDS, 1.0))
-                hint = "Raise an open palm toward the camera"
+                hint = "Raise an open palm toward the camera. Stand about 3 m back."
                 if progress >= 1.0:
                     phase, phase_start = "still", now
                     meter.reset()
@@ -128,7 +293,7 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                 if has_hand:
                     meter.push(lm[8].x * width, lm[8].y * height)
                 progress = min((now - phase_start) / STILL_SECONDS, 1.0)
-                hint = "Hold still - measuring how much your hand shakes"
+                hint = "Hold still - measuring how much your hand shakes."
                 if progress >= 1.0:
                     phase, phase_start = "ref", now
                     palms.clear()
@@ -137,31 +302,46 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                 if has_hand:
                     palms.append(hand_scale(lm))
                 progress = min((now - phase_start) / REF_SECONDS, 1.0)
-                hint = "Keep pointing at the screen - measuring your distance"
+                hint = "Keep pointing at the screen - measuring your hand size."
                 if progress >= 1.0:
                     break
 
             if show and last_image is not None:
-                cv2.imshow(WIN, _bar(last_image, progress, hint))
+                chips = {}
+                if phase == "still":
+                    chips["jitter"] = f"{meter.rms:.1f} px   {meter.score}/100"
+                if phase == "ref" and last_lm is not None:
+                    chips["hand"] = f"{hand_scale(last_lm) * 100:.1f}% of frame"
+                if last_lm is not None:
+                    dist = estimate_distance_cm(last_lm, width, cfg) / 30.48
+                    if dist > 0:
+                        chips["distance"] = f"{dist:.1f} ft"
+                cv2.imshow(WIN, render(last_image, step_index[phase], progress,
+                                       hint, chips, last_lm))
                 if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
                     print("Cancelled.")
                     return None
+
+        palm = float(np.median(palms)) if palms else 0.0375
+        dist_cm = estimate_distance_cm(last_lm, width, cfg) if last_lm is not None else 0.0
+        distance_ft = dist_cm / 30.48 if dist_cm > 0 else 10.0
+        profile = Profile.from_measurement(palm=palm, jitter_px=meter.rms,
+                                           distance_ft=distance_ft)
+        save_profile(profile, out_path)
+        print(f"[3/3] reference hand size {palm * 100:.2f}% of frame at "
+              f"{distance_ft:.1f} ft")
+        print(f"\nSaved {out_path}\n  {profile.summary()}")
+
+        if show and last_image is not None:
+            for _ in range(90):          # hold the card about 1.8 s
+                cv2.imshow(WIN, render_done(last_image, profile))
+                if (cv2.waitKey(20) & 0xFF) in (27, ord("q")):
+                    break
+        return profile
     finally:
         src.close()
         if show:
             cv2.destroyAllWindows()
-
-    palm = float(np.median(palms)) if palms else 0.0375
-    dist_cm = estimate_distance_cm(last_lm, width, cfg) if last_lm is not None else 0.0
-    distance_ft = dist_cm / 30.48 if dist_cm > 0 else 10.0
-    profile = Profile.from_measurement(palm=palm, jitter_px=meter.rms,
-                                       distance_ft=distance_ft)
-    save_profile(profile, out_path)
-    print(f"[3/3] reference hand size {palm * 100:.2f}% of frame at "
-          f"{distance_ft:.1f} ft")
-    print(f"\nSaved {out_path}\n  {profile.summary()}")
-    print("\nNext: python app.py   (AirTrack itself is on your teammates branch)")
-    return profile
 
 
 def main(argv=None):

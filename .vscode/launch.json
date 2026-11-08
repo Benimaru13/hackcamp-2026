@@ -2,10 +2,30 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "AirTrack: calibrate",
+      "name": "AirTrack: start (calibrate, then control)",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/calibrate.py",
+      "program": "${workspaceFolder}/start.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "AirTrack: start (dry run, never moves the cursor)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/start.py",
+      "args": ["--dry-run"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "AirTrack: recalibrate",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/start.py",
+      "args": ["--recalibrate"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false
@@ -14,27 +34,8 @@
       "name": "AirTrack: calibrate (simulated hand, no camera)",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/calibrate.py",
+      "program": "${workspaceFolder}/start.py",
       "args": ["--simulate"],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": false
-    },
-    {
-      "name": "AirTrack: run calibrated prototype",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/app_calibrated.py",
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "justMyCode": false
-    },
-    {
-      "name": "AirTrack: run calibrated prototype (dry run)",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/app_calibrated.py",
-      "args": ["--dry-run"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false
