@@ -22,8 +22,9 @@ python app.py                # run it; hold an open palm to take control
 | Shake / jitter rejection | working, unit tested, measured |
 | Click | only with the pointing hand: hold it still ~2 s, unit tested |
 | Arming / releasing control | working: open palm to arm, fist to release |
-| State feedback | full-screen click-through halo (PySide6) + HUD in the preview window |
+| State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
+| Two-finger vertical swipe | scrolls up/down, one wheel step per 0.15 s, ACTIVE only |
 | Two-finger sideways swipe | sends ctrl+← / ctrl+→; currently fires in every state (see Known issues) |
 | Volume / media keys | not in the MVP |
 
@@ -37,6 +38,7 @@ python app.py                # run it; hold an open palm to take control
 | ☝️ Index finger only | ACTIVE | moves the cursor |
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
+| ✌️ Two fingers, pointing up/down | ACTIVE | scrolls (one wheel step every 0.15 s) |
 | ✌️ Two fingers, sideways | any state | sends ctrl+← / ctrl+→ (see Known issues) |
 | — Esc / `q` / Ctrl-C | any time | quits, control released |
 
@@ -73,10 +75,11 @@ to keep from firing accidentally.
 - **ACTIVE** — a green halo around the whole screen plus a live pose/distance
   readout show that gestures are controlling the computer. This is the "it is armed
   and dangerous" cue, and it covers the desktop rather than the camera preview.
-- **The halo is its own window** (`overlay.py`): frameless, transparent,
-  always-on-top and click-through, spanning every display, so clicks pass straight
-  through to whatever is underneath. `--no-overlay` turns it off and falls back to
-  drawing the glow inside the preview window.
+- **The halo is its own window** (`edge_glow.py`): a borderless AppKit window per
+  display, transparent, always-on-top and click-through (PyObjC, macOS only), so
+  clicks pass straight through to whatever is underneath. `--no-glow` turns it off
+  and falls back to drawing the glow inside the preview window; off macOS, or
+  without PyObjC, that fallback happens automatically.
 - **Immediate stop** — any of: fist held, Esc/q, Ctrl-C, or PyAutoGUI failsafe
   (slam the pointer into a screen corner). Nothing keeps controlling the machine
   after the app exits.
@@ -92,8 +95,8 @@ pip install -r requirements.txt
 python app.py
 ```
 
-`requirements.txt` includes PySide6 for the full-screen halo; if it is missing the
-app still runs and draws the glow inside the preview instead.
+`requirements.txt` includes PyObjC on macOS for the full-screen halo; if it is
+missing the app still runs and draws the glow inside the preview instead.
 
 The first run downloads the 7.8 MB hand model into `models/` (git-ignored). No
 video, frames or landmarks ever leave the machine, and nothing is written to disk.
@@ -161,7 +164,7 @@ Live keys in the preview window:
 | `space` | ARMED ↔ OFF |
 | `Esc` / `q` | quit |
 
-CLI equivalents: `--speed`, `--min-speed`, `--no-zoom`, `--no-overlay`.
+CLI equivalents: `--speed`, `--min-speed`, `--no-zoom`, `--no-glow`.
 
 If the cursor **shakes**: raise `]` (`--min-speed`). If it feels **sticky or slow
 to start**: lower it. If the cursor is **too fast to aim**: lower `-` (`--speed`).
@@ -216,12 +219,13 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 38 tests, no camera needed
+python -m unittest discover -s tests -v   # 40 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
+two-finger direction at 1 m and 3 m (and that no other pose triggers it),
 "a pinch never counts as an open palm", arming only after the hold time, the arm
 cooldown after a release, the lost-hand safety release, the same sweep moving the
 cursor the same distance near and far, no cursor drift from a shaky still hand, a
@@ -239,16 +243,14 @@ and record what you see.
 
 ## Known issues
 
-- **Two-finger swipe ignores the state machine.** The swipe block in `app.py` runs
-  whenever a hand is visible, before the state check, so `ctrl+←` / `ctrl+→` can fire
-  while the app is ARMED or OFF, and it prints a debug line on every horizontal
-  frame. It needs gating to ACTIVE.
+- **The horizontal two-finger swipe ignores the state machine.** It runs whenever a
+  hand is visible, so `ctrl+←` / `ctrl+→` can fire while the app is ARMED or OFF. It
+  needs the same ACTIVE gate the vertical scroll already has.
 - **App switching is not the same on macOS and Windows.** `ctrl+←` / `→` switches
   Spaces on macOS and jumps a word on Windows; switching *apps* is ⌘-Tab on macOS and
   Alt-Tab on Windows, which the swipe does not send yet.
-- **The halo has not been run on a Mac yet.** It needs no extra permission, but
-  click-through behaviour over full-screen apps should be checked on the demo
-  machine.
+- **The AppKit halo is verified on a teammate's Mac only.** Click-through over
+  full-screen apps and the pulsing border should be confirmed on the demo MacBook.
 
 ---
 
@@ -258,7 +260,7 @@ and record what you see.
 | --- | --- |
 | `gesture_cursor.py` | all interaction logic: poses, states, mapping, smoothing, clicks. No camera, no OS calls — this is the part anyone can test anywhere. |
 | `tracker.py` | camera + MediaPipe HandLandmarker + long-range ROI zoom |
-| `overlay.py` | the full-screen click-through state halo (PySide6; optional, falls back to the preview border) |
+| `edge_glow.py` | the full-screen click-through state halo (PyObjC/AppKit, macOS; optional, falls back to the preview border) |
 | `app.py` | the demo: wiring, PyAutoGUI control, HUD and screen halo |
 | `fake_hand.py` | synthetic hands (tests and simulation) |
 | `simulate.py` | camera-free simulator and measurement harness |

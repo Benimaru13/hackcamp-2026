@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import unittest
@@ -13,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fake_hand import FakeHand, palm_for_distance          # noqa: E402
 from gesture_cursor import (                               # noqa: E402
     Config, ControlState, CursorController, classify_pose, is_fist, is_open_palm,
-    is_pointing, pinch_gap)
+    is_pointing, pinch_gap, two_finger_direction)
 
 DT = 1.0 / 30.0
 
@@ -75,6 +76,20 @@ class PoseTests(unittest.TestCase):
         for angle in (-0.5, 0.0, 0.5):
             hand = FakeHand(pose="point", angle=angle).at_distance(3.0)
             self.assertTrue(is_pointing(hand.landmarks()), f"angle {angle}")
+
+    def test_two_finger_direction_at_1m_and_3m(self):
+        cases = {"up": 0.0, "down": math.pi,
+                 "right": -math.pi / 2, "left": math.pi / 2}
+        for d in (1.0, 3.0):
+            for expected, angle in cases.items():
+                hand = FakeHand(pose="two", angle=angle).at_distance(d)
+                self.assertEqual(two_finger_direction(hand.landmarks()),
+                                 expected, (d, angle))
+
+    def test_only_two_fingers_trigger(self):
+        for pose in ("point", "palm", "fist", "pinch", "relaxed"):
+            hand = FakeHand(pose=pose).at_distance(3.0)
+            self.assertIsNone(two_finger_direction(hand.landmarks()), pose)
 
 
 class StateMachineTests(unittest.TestCase):

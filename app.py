@@ -5,7 +5,7 @@
 
 The window shows the camera (mirrored, so it reads like a mirror), the current
 state, the pose it recognises, and an approximate distance. The state cue itself is
-the full-screen halo (overlay.py) -- a click-through border around the whole
+the full-screen halo (edge_glow.py) -- a click-through border around the whole
 desktop -- because at 10 ft you are looking at the screen, not at this window.
 Esc / q quits, space switches between ARMED and OFF. Spoken cues (if the WAVs
 from generate_sounds.py are in sounds/) announce activation and release.
@@ -20,7 +20,8 @@ import time
 import cv2
 import numpy as np
 
-from gesture_cursor import Config, ControlState, CursorController
+from gesture_cursor import (Config, ControlState, CursorController,
+                            two_finger_direction)
 from voice import Voice
 
 WIN = "AirTrack"
@@ -29,6 +30,13 @@ COLORS = {
     ControlState.ACTIVE: (90, 255, 120),   # green
     ControlState.OFF: (120, 120, 120),     # grey
 }
+
+# Two-finger vertical scroll: one wheel step every SCROLL_INTERVAL seconds, so
+# the speed does not depend on the camera frame rate. Bigger interval = slower;
+# SCROLL_STEP is how far one step moves.
+SCROLL_STEP = 1
+SCROLL_INTERVAL = 0.15
+SCROLL_MAX_STEPS = 1        # cap a burst if one frame arrives late
 
 
 def _glow(frame, color, strength=1.0):
@@ -141,7 +149,7 @@ def main(argv=None):
     ap.add_argument("--no-preview", action="store_true")
     ap.add_argument("--frames", type=int, default=0, help="stop after N frames (testing)")
     ap.add_argument("--mute", action="store_true", help="no spoken state cues")
-    ap.add_argument("--no-overlay", action="store_true",
+    ap.add_argument("--no-glow", action="store_true",
                     help="no full-screen halo (the preview border is used instead)")
     args = ap.parse_args(argv)
 
@@ -175,19 +183,6 @@ def main(argv=None):
         return 1
     cfg.frame_w = tracker.width
 
-    # The halo window is created before the OpenCV window so Qt owns the app first.
-    glow = None
-    if args.no_overlay:
-        print("Screen halo: off (--no-overlay); the preview border is used.")
-    else:
-        from overlay import ScreenGlow
-        glow = ScreenGlow()
-        if glow.enabled:
-            print("Screen halo: full screen, click-through (overlay.py).")
-        else:
-            print(f"Screen halo: unavailable ({glow.reason}); "
-                  "the preview border is used instead.")
-    halo_in_preview = glow is None or not glow.enabled
 
     if gui:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -196,6 +191,21 @@ def main(argv=None):
             cv2.setWindowProperty(WIN, cv2.WND_PROP_TOPMOST, 1)
         except Exception:
             pass
+
+    # The halo is a macOS AppKit window (edge_glow.py); without it, or off macOS,
+    # the preview border is the fallback.
+    glow = None
+    if args.no_glow:
+        print("Screen halo: off (--no-glow); the preview border is used.")
+    elif not gui:
+        print("Screen halo: off (no preview window).")
+    else:
+        from edge_glow import EdgeGlow
+        glow = EdgeGlow(enabled=True)
+        print("Screen halo: full screen, click-through (edge_glow.py)."
+              if glow.available else
+              "Screen halo: unavailable; the preview border is used instead.")
+    halo_in_preview = glow is None or not glow.available
 
     print(f"AirTrack running ({tracker.width}x{tracker.height}).")
     print("ARMED: hold an open palm for half a second to take control.")
@@ -216,6 +226,8 @@ def main(argv=None):
     state = None
     t_start = time.monotonic()
     last_swipe_time = 0.0
+    scroll_dir = None
+    last_scroll_time = 0.0
     
     try:
         while True:
@@ -228,53 +240,44 @@ def main(argv=None):
 
             current_time = time.monotonic()
 
-            if glow is not None and glow.enabled:
-                pulse = 0.75 + 0.25 * math.sin(current_time * 5.0)
-                glow.show_state(out.state, 1.0 if out.state is ControlState.ACTIVE
-                                else 0.45 * pulse)
+            if glow is not None:
+                glow.update(out.state.value, current_time)
 
-            if fr.landmarks:
-                # Get coordinates for Wrist (0), Index (5, 8) and Middle (9, 12) fingers
-                wrist = fr.landmarks[0]
-                idx_mcp, idx_tip = fr.landmarks[5], fr.landmarks[8]
-                mid_mcp, mid_tip = fr.landmarks[9], fr.landmarks[12]
+            direction = two_finger_direction(fr.landmarks)
 
-                # Calculate a dynamic "hand size" based on wrist-to-knuckle distance.
-                # This ensures the gesture works perfectly whether you are 1m or 3m away.
-                hand_size = math.hypot(mid_mcp.x - wrist.x, mid_mcp.y - wrist.y)
+            # Two-finger vertical: hold the V pointing up/down to scroll slowly.
+            # The rate is per second, not per frame, so it feels the same at
+            # 15 fps and at 60 fps. Only in ACTIVE: ARMED stays hands-off.
+            if direction in ("up", "down") and out.state is ControlState.ACTIVE:
+                if direction != scroll_dir:
+                    scroll_dir = direction
+                    last_scroll_time = current_time
+                    print(f"[{current_time - t_start:6.1f}s] ✌️ "
+                          f"two fingers {direction} -> scrolling {direction}")
+                elapsed = current_time - last_scroll_time
+                if elapsed >= SCROLL_INTERVAL:
+                    steps = min(int(elapsed / SCROLL_INTERVAL), SCROLL_MAX_STEPS)
+                    if pyautogui is not None and not args.dry_run:
+                        pyautogui.scroll(
+                            SCROLL_STEP * steps if direction == "up"
+                            else -SCROLL_STEP * steps)
+                    last_scroll_time = current_time
+            else:
+                if scroll_dir is not None:
+                    print(f"[{current_time - t_start:6.1f}s] ✌️ scroll stopped")
+                scroll_dir = None
 
-                # Calculate X and Y extensions for both fingers
-                idx_dx = idx_tip.x - idx_mcp.x
-                idx_dy = idx_tip.y - idx_mcp.y
-                mid_dx = mid_tip.x - mid_mcp.x
-                mid_dy = mid_tip.y - mid_mcp.y
-
-                # Check if fingers are horizontal (Y-diff is small relative to hand size)
-                is_horizontal = (abs(idx_dy) < 0.6 * hand_size) and (abs(mid_dy) < 0.6 * hand_size)
-
-                # Check if fingers are fully extended (X-diff is > 80% of hand size)
-                is_extended_left = (idx_dx > 0.8 * hand_size) and (mid_dx > 0.8 * hand_size)
-                is_extended_right = (idx_dx < -0.8 * hand_size) and (mid_dx < -0.8 * hand_size)
-
-                # Debug print to help you test the thresholds in real-time
-                if is_horizontal:
-                    print(f"👀 2-Finger Check | Hand Size: {hand_size:.3f} | Idx DX: {idx_dx:.3f} | Mid DX: {mid_dx:.3f}")
-
-                # Execute swipe if cooldown is clear and fingers are horizontal
-                if current_time - last_swipe_time > 1.5 and is_horizontal:
-                    
-                    if is_extended_right:  # Mirror effect: dx < 0 means pointing right
-                        print(f"[{current_time - t_start:6.1f}s] ✌️ 👈 2-FINGER SWIPE RIGHT")
-                        if pyautogui is not None and not args.dry_run:
-                            pyautogui.hotkey('ctrl', 'right')
-                        last_swipe_time = current_time
-
-                    elif is_extended_left: # Mirror effect: dx > 0 means pointing left
-                        print(f"[{current_time - t_start:6.1f}s] ✌️ 👉 2-FINGER SWIPE LEFT")
-                        if pyautogui is not None and not args.dry_run:
-                            pyautogui.hotkey('ctrl', 'left')
-                        last_swipe_time = current_time
-                        
+            # Two-finger horizontal: the previous/next-space swipe (any state).
+            if direction in ("left", "right") and current_time - last_swipe_time > 1.5:
+                if direction == "right":
+                    print(f"[{current_time - t_start:6.1f}s] ✌️ 👈 2-FINGER SWIPE RIGHT")
+                    if pyautogui is not None and not args.dry_run:
+                        pyautogui.hotkey("ctrl", "right")
+                else:
+                    print(f"[{current_time - t_start:6.1f}s] ✌️ 👉 2-FINGER SWIPE LEFT")
+                    if pyautogui is not None and not args.dry_run:
+                        pyautogui.hotkey("ctrl", "left")
+                last_swipe_time = current_time
             if out.state is not state:
                 was_active = state is ControlState.ACTIVE
                 state = out.state

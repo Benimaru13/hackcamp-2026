@@ -171,6 +171,34 @@ def is_pointing(lm):
     return idx and not (mid or ring or pink)
 
 
+def two_finger_direction(lm):
+    """Which way an index+middle V points: "up", "down", "left" or "right".
+
+    Used for swipe (left/right) and slow scroll (up/down). Requiring exactly
+    those two fingers to be extended keeps an open palm, a fist and a
+    single-finger point from ever triggering it.
+    """
+    if lm is None:
+        return None
+    idx, mid, ring, pink = fingers_up(lm)
+    if not (idx and mid) or ring or pink:
+        return None
+    scale = max(hand_scale(lm), 1e-6)
+    dx = ((lm[INDEX_TIP].x - lm[INDEX_MCP].x)
+          + (lm[MIDDLE_TIP].x - lm[MIDDLE_MCP].x)) / 2.0
+    dy = ((lm[INDEX_TIP].y - lm[INDEX_MCP].y)
+          + (lm[MIDDLE_TIP].y - lm[MIDDLE_MCP].y)) / 2.0
+    # Image y grows downward, so a negative dy points up. The camera image is
+    # not mirrored: the user's right is the image's left (dx < 0).
+    if abs(dy) > abs(dx):
+        if abs(dy) < 0.6 * scale or abs(dx) > 0.6 * scale:
+            return None
+        return "up" if dy < 0 else "down"
+    if abs(dx) < 0.8 * scale or abs(dy) > 0.6 * scale:
+        return None
+    return "right" if dx < 0 else "left"
+
+
 def pinch_gap(lm):
     """Thumb-tip to index-tip distance, normalized by palm length.
     Distance independent: ~0 when pinched, >1.5 for a flat open hand."""
