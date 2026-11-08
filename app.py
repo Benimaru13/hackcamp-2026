@@ -246,9 +246,6 @@ def main(argv=None):
                                 pyautogui.hotkey('ctrl', 'left')
                             last_swipe_time = current_time
 
-            out = ctrl.update(fr.landmarks, time.monotonic())
-            frames += 1
-            detections += bool(fr.detected)
 
             if out.state is not state:
                 was_active = state is ControlState.ACTIVE
