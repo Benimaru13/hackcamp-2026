@@ -403,9 +403,12 @@ def main(argv=None):
                 if profile is not None and fr.landmarks:
                     ratio = distance_ratio(hand_scale(fr.landmarks), profile.palm)
                     ring_px = cursor_ring_px(RING_BASE_PX, ratio)
+                tremor = (f"{profile.tremor_hz:.1f}Hz " if profile is not None
+                          and profile.tremor_hz > 0 else "")
                 calib = ("defaults" if profile is None else
-                         f"{profile.jitter_score}/100 jitter, "
-                         f"{profile.dwell_time:.2f}s dwell, ring "
+                         f"{tremor}{profile.jitter_score}/100, "
+                         f"dwell {profile.dwell_time:.2f}s, "
+                         f"arm {profile.arm_hold:.2f}s, ring "
                          f"{ring_px:.0f}px @{ratio:.1f}x")
                 frame = draw_hud(fr.image, out, fr, {
                     "ring": ring_px, "ring_base": RING_BASE_PX, "calib": calib,

@@ -3,10 +3,16 @@
 Deliberately standalone: no cv2, no camera, no OS calls, and no imports from
 gesture_cursor.py or app.py. The AirTrack pipeline belongs to the other branches;
 this module only produces numbers it can consume.
+
+The measurement is aimed at tremor, not generic noise. A shaky hand is not white
+noise: it has one dominant periodic component, usually between 3 and 8 Hz. Finding
+that frequency is what lets the smoothing sit below it instead of guessing from a
+single RMS value -- and a filter cannot reject a tremor it was not told about.
 """
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 
 class JitterMeter:
@@ -56,21 +62,113 @@ def jitter_score(rms_px):
     return int(round(max(0.0, min(100.0, 100.0 * math.exp(-max(rms_px, 0.0) / 6.0)))))
 
 
-def tune_from_jitter(rms_px):
-    """Measured shake -> the settings that stop it dragging the cursor.
+@dataclass
+class TremorProfile:
+    """The periodic part of a still hand: how fast it oscillates and how far."""
 
-    A shaky hand needs a higher speed gate (so shake never passes it), a lower
-    filter cutoff (so what does get through is smooth) and a longer dwell (so a
-    wobble cannot fire a click). A steady hand keeps all its responsiveness.
+    freq_hz: float = 0.0        # 0 = nothing periodic found
+    amplitude_px: float = 0.0   # peak amplitude of that component
+    rms_px: float = 0.0         # overall shake, for the score
+    score: int = 100
+
+    def describe(self):
+        if self.freq_hz <= 0:
+            return f"{self.rms_px:.1f} px shake, steady ({self.score}/100)"
+        return (f"{self.freq_hz:.1f} Hz tremor, {self.amplitude_px:.1f} px "
+                f"({self.score}/100)")
+
+
+def estimate_tremor(samples, min_hz=2.0, max_hz=12.0, step_hz=0.25):
+    """Dominant periodic component of a still hand, in Hz and pixels.
+
+    `samples` is [(t_seconds, x_px, y_px), ...] straight from the camera during
+    the hold-still phase. A coarse DFT is enough: 41 frequencies x 2 axes over a
+    couple of hundred points. Pure Python on purpose -- no numpy here, so this
+    stays testable anywhere and keeps one implementation of the idea.
+
+    The peak is only reported if it stands clearly above the noise floor; a flat
+    spectrum means a steady hand, not a tremor at an arbitrary frequency.
     """
-    rms = max(0.0, min(float(rms_px), 20.0))
+    pts = [p for p in samples if len(p) == 3]
+    n = len(pts)
+    if n < 24:
+        return TremorProfile()
+    t0 = pts[0][0]
+    ts = [p[0] - t0 for p in pts]
+    if ts[-1] - ts[0] <= 0.5:
+        return TremorProfile()
+
+    mx = sum(p[1] for p in pts) / n
+    my = sum(p[2] for p in pts) / n
+    xs = [p[1] - mx for p in pts]
+    ys = [p[2] - my for p in pts]
+    rms = math.sqrt(sum(x * x + y * y for x, y in zip(xs, ys)) / n)
+
+    best_amp, best_hz = 0.0, 0.0
+    steps = int(round((max_hz - min_hz) / step_hz))
+    for i in range(steps + 1):
+        f = min_hz + i * step_hz
+        w = 2.0 * math.pi * f
+        cos_part = [math.cos(w * t) for t in ts]
+        sin_part = [math.sin(w * t) for t in ts]
+        for series in (xs, ys):
+            re = sum(v * c for v, c in zip(series, cos_part))
+            im = sum(v * s for v, s in zip(series, sin_part))
+            amp = 2.0 * math.hypot(re, im) / n
+            if amp > best_amp:
+                best_amp, best_hz = amp, f
+
+    # White noise always has SOME spectral peak; only call it a tremor when it
+    # clears an absolute floor as well as the noise level, or a steady hand would
+    # be told it trembles at 5.5 Hz.
+    if best_amp < max(1.2, 0.30 * rms):
+        best_hz = 0.0               # nothing stands out: a steady hand
+    return TremorProfile(freq_hz=round(best_hz, 1), amplitude_px=round(best_amp, 2),
+                         rms_px=round(rms, 2), score=jitter_score(rms))
+
+
+def tremor_severity(freq_hz, amplitude_px):
+    """How much this tremor matters: its amplitude, weighted by staying periodic.
+
+    Motion in the 2.5-9 Hz band counts fully, because that is the band a filter
+    can reject without also killing deliberate movement. Motion outside it (slow
+    drift, a jittery one-off) counts half as much.
+    """
+    amp = max(0.0, min(float(amplitude_px), 20.0))
+    if 2.5 <= freq_hz <= 9.0:
+        weight = 1.0
+    elif freq_hz > 0:
+        weight = 0.5
+    else:
+        weight = 0.6
+    return amp * weight
+
+
+def tune_from_tremor(tremor):
+    """The measured tremor -> settings, floored at the team's own defaults.
+
+    Every value starts at the hand-tuned default and only moves in the steadying
+    direction, so calibrating can never make control twitchier than the branch it
+    came from: a steady hand gets exactly the defaults back. As the tremor grows,
+    the speed gate rises, the filter cutoff drops, beta stops the filter reopening
+    on fast oscillation, and every hold (dwell, arm, swipe) lengthens.
+    """
+    sev = tremor_severity(tremor.freq_hz, tremor.amplitude_px)
     return {
-        "min_speed": round(min(max(0.55 + rms * 0.18, 0.55), 1.80), 2),
-        "min_cutoff": round(min(max(1.10 - rms * 0.08, 0.45), 1.10), 2),
-        "beta": round(min(max(0.80 + rms * 0.12, 0.80), 1.80), 2),
-        "dwell_time": round(min(max(1.40 + rms * 0.12, 1.40), 2.60), 2),
-        "dwell_radius": round(min(max(0.14 + rms * 0.02, 0.14), 0.30), 3),
+        "min_speed": round(min(1.00 + 0.12 * sev, 2.20), 2),
+        "min_cutoff": round(max(0.70 - 0.06 * sev, 0.30), 2),
+        "beta": round(max(1.20 - 0.16 * sev, 0.30), 2),
+        "dwell_time": round(min(2.00 + 0.10 * sev, 3.60), 2),
+        "dwell_radius": round(min(0.20 + 0.02 * sev, 0.40), 3),
+        "arm_hold": round(min(0.55 + 0.06 * sev, 1.60), 2),
+        "swipe_hold": round(min(0.75 + 0.08 * sev, 2.20), 2),
     }
+
+
+def tune_from_jitter(rms_px):
+    """A bare RMS, when no frequency was measured: treated as unknown-frequency shake."""
+    return tune_from_tremor(TremorProfile(amplitude_px=float(rms_px),
+                                          rms_px=float(rms_px)))
 
 
 def distance_ratio(palm, ref_palm):

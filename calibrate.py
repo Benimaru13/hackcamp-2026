@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 
 from calibrate_profile import DEFAULT_PATH, Profile, save_profile
-from calibration_math import JitterMeter
+from calibration_math import JitterMeter, estimate_tremor
 from gesture_cursor import Config, estimate_distance_cm, hand_scale, is_arm_pose
 
 ARM_SECONDS = 0.6
@@ -228,7 +228,9 @@ def render_done(image, profile):
     ty = h // 2 - 60
     rows = (
         ("Calibrated", ty, 1.15, ACCENT, 2),
-        (f"{profile.jitter_score}/100 steady   -   {profile.jitter_px:.1f} px of shake",
+        ((f"{profile.tremor_hz:.1f} Hz tremor   -   {profile.tremor_px:.1f} px   -   "
+          f"{profile.jitter_score}/100 steady" if profile.tremor_hz > 0 else
+          f"{profile.jitter_px:.1f} px of shake   -   {profile.jitter_score}/100 steady"),
          ty + 46, 0.52, INK, 1),
         (f"dwell {profile.dwell_time:.2f} s   -   min speed {profile.min_speed:.2f}"
          f"   -   {profile.distance_ft:.1f} ft", ty + 76, 0.46, MUTED, 1),
@@ -250,6 +252,8 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
     cfg = Config()
     meter = JitterMeter()
     palms = []
+    samples = []        # (t, x_px, y_px) of the fingertip, for the tremor estimate
+    tremor = None
     phase = "arm"
     phase_start = 0.0
     arm_since = None
@@ -291,13 +295,16 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     print("[1/3] hand found")
             elif phase == "still":
                 if has_hand:
-                    meter.push(lm[8].x * width, lm[8].y * height)
+                    sx, sy = lm[8].x * width, lm[8].y * height
+                    meter.push(sx, sy)
+                    samples.append((now, sx, sy))
                 progress = min((now - phase_start) / STILL_SECONDS, 1.0)
                 hint = "Hold still - measuring how much your hand shakes."
                 if progress >= 1.0:
                     phase, phase_start = "ref", now
                     palms.clear()
-                    print(f"[2/3] jitter {meter.rms:.2f} px ({meter.score}/100)")
+                    tremor = estimate_tremor(samples)
+                    print(f"[2/3] {tremor.describe()}")
             else:
                 if has_hand:
                     palms.append(hand_scale(lm))
@@ -326,7 +333,7 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
         dist_cm = estimate_distance_cm(last_lm, width, cfg) if last_lm is not None else 0.0
         distance_ft = dist_cm / 30.48 if dist_cm > 0 else 10.0
         profile = Profile.from_measurement(palm=palm, jitter_px=meter.rms,
-                                           distance_ft=distance_ft)
+                                           distance_ft=distance_ft, tremor=tremor)
         save_profile(profile, out_path)
         print(f"[3/3] reference hand size {palm * 100:.2f}% of frame at "
               f"{distance_ft:.1f} ft")
