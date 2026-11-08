@@ -196,6 +196,8 @@ def main(argv=None):
     frames = detections = clicks = 0
     state = None
     t_start = time.monotonic()
+    last_swipe_time = 0.0
+    
     try:
         while True:
             fr = tracker.read()
@@ -207,7 +209,48 @@ def main(argv=None):
 
             current_time = time.monotonic()
 
+            if fr.landmarks:
+                # Get coordinates for Wrist (0), Index (5, 8) and Middle (9, 12) fingers
+                wrist = fr.landmarks[0]
+                idx_mcp, idx_tip = fr.landmarks[5], fr.landmarks[8]
+                mid_mcp, mid_tip = fr.landmarks[9], fr.landmarks[12]
 
+                # Calculate a dynamic "hand size" based on wrist-to-knuckle distance.
+                # This ensures the gesture works perfectly whether you are 1m or 3m away.
+                hand_size = math.hypot(mid_mcp.x - wrist.x, mid_mcp.y - wrist.y)
+
+                # Calculate X and Y extensions for both fingers
+                idx_dx = idx_tip.x - idx_mcp.x
+                idx_dy = idx_tip.y - idx_mcp.y
+                mid_dx = mid_tip.x - mid_mcp.x
+                mid_dy = mid_tip.y - mid_mcp.y
+
+                # Check if fingers are horizontal (Y-diff is small relative to hand size)
+                is_horizontal = (abs(idx_dy) < 0.6 * hand_size) and (abs(mid_dy) < 0.6 * hand_size)
+
+                # Check if fingers are fully extended (X-diff is > 80% of hand size)
+                is_extended_left = (idx_dx > 0.8 * hand_size) and (mid_dx > 0.8 * hand_size)
+                is_extended_right = (idx_dx < -0.8 * hand_size) and (mid_dx < -0.8 * hand_size)
+
+                # Debug print to help you test the thresholds in real-time
+                if is_horizontal:
+                    print(f"👀 2-Finger Check | Hand Size: {hand_size:.3f} | Idx DX: {idx_dx:.3f} | Mid DX: {mid_dx:.3f}")
+
+                # Execute swipe if cooldown is clear and fingers are horizontal
+                if current_time - last_swipe_time > 1.5 and is_horizontal:
+                    
+                    if is_extended_right:  # Mirror effect: dx < 0 means pointing right
+                        print(f"[{current_time - t_start:6.1f}s] ✌️ 👈 2-FINGER SWIPE RIGHT")
+                        if pyautogui is not None and not args.dry_run:
+                            pyautogui.hotkey('ctrl', 'right')
+                        last_swipe_time = current_time
+
+                    elif is_extended_left: # Mirror effect: dx > 0 means pointing left
+                        print(f"[{current_time - t_start:6.1f}s] ✌️ 👉 2-FINGER SWIPE LEFT")
+                        if pyautogui is not None and not args.dry_run:
+                            pyautogui.hotkey('ctrl', 'left')
+                        last_swipe_time = current_time
+                        
             if out.state is not state:
                 was_active = state is ControlState.ACTIVE
                 state = out.state
