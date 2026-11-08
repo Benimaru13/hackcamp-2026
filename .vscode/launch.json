@@ -19,6 +19,25 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false
+    },
+    {
+      "name": "AirTrack: run calibrated prototype",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/app_calibrated.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "AirTrack: run calibrated prototype (dry run)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/app_calibrated.py",
+      "args": ["--dry-run"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
     }
   ]
 }
