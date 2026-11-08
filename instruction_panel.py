@@ -300,10 +300,12 @@ def _ok_button(canvas, rect, s, hover):
 
 
 def draw_manual(frame, profile=None, cfg=None, hover=False):
-    """The popup manual: dim the feed, one glass card, one OK button.
+    """The popup manual: dim the feed, one glass card, one centred OK button.
 
-    Returns (image, ok_rect) where ok_rect is in FRAME pixels, so the caller can
-    hit-test a click against it after scaling for the displayed window size.
+    The type is sized for a screen seen from a few metres, not for a desk: the
+    card takes most of the frame and, after the title, the gesture names are the
+    largest thing on it. Returns (image, ok_rect) with ok_rect in FRAME pixels so
+    the caller can hit-test a click after scaling for the window size.
     """
     out = frame.copy()
     h, w = out.shape[:2]
@@ -319,78 +321,79 @@ def draw_manual(frame, profile=None, cfg=None, hover=False):
         ("5", "Two fingers left/right", "hold 0.6 s", "switch space"),
         ("6", "Fist", "hold 0.35 s", "release"))
 
-    pad = int(34 * s)
-    title_h = int(50 * s)
-    head_h = int(40 * s)
-    row_h = int(32 * s)
-    state_h = int(58 * s)
-    ok_h = int(58 * s)
-    body_h = max(state_h * len(states), row_h * len(gestures)) + int(8 * s)
-    pw = int(min(max(w * 0.76, 720 * s), w - int(40 * s)))
-    ph = int(min(pad * 2 + title_h + head_h + body_h + ok_h, h - int(40 * s)))
+    pad = int(30 * s)
+    title_h = int(78 * s)
+    head_h = int(48 * s)
+    row_h = int(58 * s)
+    state_h = int(92 * s)
+    ok_h = int(104 * s)
+    body_h = max(state_h * len(states), row_h * len(gestures))
+    pw = int(min(max(w * 0.90, 900 * s), w - int(20 * s)))
+    ph = int(min(pad * 2 + title_h + head_h + body_h + ok_h, h - int(12 * s)))
     x0, y0 = (w - pw) // 2, (h - ph) // 2
     x1, y1 = x0 + pw, y0 + ph
-    out = glass_card(out, (x0, y0, x1, y1), radius=int(22 * s))
+    out = glass_card(out, (x0, y0, x1, y1), radius=int(24 * s))
 
     x = x0 + pad
     right = x1 - pad
-    y = y0 + pad + int(22 * s)
-    cv2.putText(out, "AIRTRACK", (x, y), FONT, 0.72 * s, ACCENT,
-                max(1, int(2 * s)), cv2.LINE_AA)
-    (tw, _), _ = cv2.getTextSize("AIRTRACK", FONT, 0.72 * s, max(1, int(2 * s)))
-    cv2.putText(out, "how to use it", (x + tw + int(16 * s), y), FONT, 0.46 * s,
-                INK, 1, cv2.LINE_AA)
-    y += int(26 * s)
-    cv2.putText(out, "your hand is the mouse - nothing is clicked until you raise "
-                     "an open palm",
-                (x, y), FONT, 0.36 * s, MUTED, 1, cv2.LINE_AA)
+    y = y0 + pad + int(36 * s)
+    cv2.putText(out, "AIRTRACK", (x, y), FONT, 1.05 * s, ACCENT,
+                max(2, int(3 * s)), cv2.LINE_AA)
+    (tw, _), _ = cv2.getTextSize("AIRTRACK", FONT, 1.05 * s, max(2, int(3 * s)))
+    cv2.putText(out, "how to use it", (x + tw + int(22 * s), y), FONT, 0.64 * s,
+                INK, 2, cv2.LINE_AA)
+    y += int(42 * s)
+    cv2.putText(out, "your hand is the mouse - nothing moves until you raise an "
+                     "open palm", (x, y), FONT, 0.50 * s, MUTED, 1, cv2.LINE_AA)
     summary = _summary(profile)
-    (sw_, _), _ = cv2.getTextSize(summary, FONT, 0.36 * s, 1)
-    cv2.putText(out, summary, (right - sw_, y), FONT, 0.36 * s, MUTED, 1, cv2.LINE_AA)
-    y += title_h - int(26 * s)      # title_h already covers the subtitle line
-    cv2.line(out, (x, y - int(10 * s)), (right, y - int(10 * s)), (74, 70, 64), 1,
+    (sw_, _), _ = cv2.getTextSize(summary, FONT, 0.44 * s, 1)
+    cv2.putText(out, summary, (right - sw_, y), FONT, 0.44 * s, MUTED, 1, cv2.LINE_AA)
+    y += title_h - int(42 * s)      # title_h already covers the subtitle line
+    cv2.line(out, (x, y - int(12 * s)), (right, y - int(12 * s)), (78, 74, 68), 1,
              cv2.LINE_AA)
 
-    left_w = int(pw * 0.34)
+    left_w = int(pw * 0.42)
     right_x = x + left_w
-    cv2.putText(out, "STATES", (x, y + int(12 * s)), FONT, 0.34 * s, MUTED, 1,
+    cv2.putText(out, "STATES", (x, y + int(18 * s)), FONT, 0.46 * s, MUTED, 1,
                 cv2.LINE_AA)
-    cv2.putText(out, "GESTURES", (right_x, y + int(12 * s)), FONT, 0.34 * s, MUTED,
+    cv2.putText(out, "GESTURES", (right_x, y + int(18 * s)), FONT, 0.46 * s, MUTED,
                 1, cv2.LINE_AA)
     y += head_h
 
     for i, (name, color, meaning) in enumerate(states):
-        sy = y + i * state_h + int(14 * s)
-        cv2.circle(out, (x + int(6 * s), sy - int(4 * s)), int(6 * s), color, -1,
+        sy = y + i * state_h + int(22 * s)
+        cv2.circle(out, (x + int(9 * s), sy - int(7 * s)), int(9 * s), color, -1,
                    cv2.LINE_AA)
-        cv2.putText(out, name, (x + int(20 * s), sy), FONT, 0.48 * s, color, 1,
+        cv2.putText(out, name, (x + int(28 * s), sy), FONT, 0.84 * s, color, 2,
                     cv2.LINE_AA)
-        cv2.putText(out, meaning, (x, sy + int(20 * s)), FONT, 0.33 * s, MUTED, 1,
+        cv2.putText(out, meaning, (x, sy + int(30 * s)), FONT, 0.50 * s, MUTED, 1,
                     cv2.LINE_AA)
 
     for i, (num, gesture, hold, effect) in enumerate(gestures):
-        gy = y + i * row_h + int(16 * s)
-        cv2.circle(out, (right_x + int(9 * s), gy - int(4 * s)), int(9 * s), ACCENT,
+        gy = y + i * row_h + int(26 * s)
+        cv2.circle(out, (right_x + int(12 * s), gy - int(7 * s)), int(12 * s), ACCENT,
                    1, cv2.LINE_AA)
-        (nw, nh), _ = cv2.getTextSize(num, FONT, 0.32 * s, 1)
+        (nw, nh), _ = cv2.getTextSize(num, FONT, 0.44 * s, 1)
         cv2.putText(out, num,
-                    (right_x + int(9 * s) - nw // 2, gy - int(4 * s) + nh // 2),
-                    FONT, 0.32 * s, ACCENT, 1, cv2.LINE_AA)
-        cv2.putText(out, gesture, (right_x + int(26 * s), gy), FONT, 0.42 * s, INK,
-                    1, cv2.LINE_AA)
+                    (right_x + int(12 * s) - nw // 2, gy - int(7 * s) + nh // 2),
+                    FONT, 0.44 * s, ACCENT, 1, cv2.LINE_AA)
+        cv2.putText(out, gesture, (right_x + int(34 * s), gy), FONT, 0.68 * s, INK,
+                    2, cv2.LINE_AA)
         if hold:
-            (gw, _), _ = cv2.getTextSize(gesture, FONT, 0.42 * s, 1)
-            cv2.putText(out, hold, (right_x + int(34 * s) + gw, gy), FONT, 0.34 * s,
+            (gw, _), _ = cv2.getTextSize(gesture, FONT, 0.68 * s, 2)
+            cv2.putText(out, hold, (right_x + int(48 * s) + gw, gy), FONT, 0.46 * s,
                         MUTED, 1, cv2.LINE_AA)
-        (ew, _), _ = cv2.getTextSize(effect, FONT, 0.38 * s, 1)
-        cv2.putText(out, effect, (right - ew, gy), FONT, 0.38 * s, INK, 1,
-                    cv2.LINE_AA)
+        (ew, _), _ = cv2.getTextSize(effect, FONT, 0.60 * s, 1)
+        cv2.putText(out, effect, (right - ew, gy), FONT, 0.60 * s, INK, 1, cv2.LINE_AA)
 
-    # Footer + the button that hands over control.
+    # Footer, then OK centred at the bottom of the card.
     fy = y0 + pad + title_h + head_h + body_h
-    cv2.putText(out, "space toggles control  -  Esc quits  -  m opens this again",
-                (x, fy + int(28 * s)), FONT, 0.34 * s, MUTED, 1, cv2.LINE_AA)
-    bw, bh = int(150 * s), int(44 * s)
-    ok_rect = (right - bw, y1 - pad - bh, right, y1 - pad)
+    footer = "space toggles control  -  Esc quits  -  m opens this again"
+    (fw, _), _ = cv2.getTextSize(footer, FONT, 0.44 * s, 1)
+    cv2.putText(out, footer, ((x0 + x1 - fw) // 2, fy + int(26 * s)), FONT,
+                0.44 * s, MUTED, 1, cv2.LINE_AA)
+    bw, bh = int(260 * s), int(66 * s)
+    bx0 = (x0 + x1) // 2 - bw // 2
+    ok_rect = (bx0, y1 - pad - bh, bx0 + bw, y1 - pad)
     out = _ok_button(out, ok_rect, s, hover)
     return out, ok_rect

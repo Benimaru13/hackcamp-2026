@@ -359,7 +359,7 @@ def main(argv=None, profile=None, tracker=None):
 
     if gui:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WIN, 960, 540)
+        cv2.resizeWindow(WIN, 1280, 720)
         try:
             cv2.setWindowProperty(WIN, cv2.WND_PROP_TOPMOST, 1)
         except Exception:
