@@ -38,6 +38,7 @@ import numpy as np
 from calibrate_profile import DEFAULT_PATH, Profile, save_profile
 from calibration_math import JitterMeter, estimate_tremor
 from gesture_cursor import Config, estimate_distance_cm, hand_scale, is_arm_pose
+from instruction_panel import draw_instruction_panel
 
 ARM_SECONDS = 0.6
 MEASURE_SECONDS = 3.5
@@ -228,30 +229,18 @@ def render(image, step, progress, hint, chips=None, landmarks=None, mirror=True)
 
 
 def render_done(image, profile):
-    """The card shown for a moment after the third measurement."""
+    """The instruction panel, shown for a moment after the measurement.
+
+    Same glass panel the tracker opens with, so the handover is one continuous
+    screen: the numbers you just earned, then the four gestures, then control.
+    """
     h, w = (image.shape[:2] if image is not None else (720, 1280))
     if image is not None:
         fitted, _, _, _ = _fit(image, w, h)
         canvas = (fitted * 0.30).astype(np.uint8)
     else:
         canvas = np.full((h, w, 3), BG, np.uint8)
-    cx = w // 2
-    ty = h // 2 - 60
-    rows = (
-        ("Calibrated", ty, 1.15, ACCENT, 2),
-        ((f"{profile.tremor_hz:.1f} Hz tremor   -   {profile.tremor_px:.1f} px   -   "
-          f"{profile.jitter_score}/100 steady" if profile.tremor_hz > 0 else
-          f"{profile.jitter_px:.1f} px of shake   -   {profile.jitter_score}/100 steady"),
-         ty + 46, 0.52, INK, 1),
-        (f"dwell {profile.dwell_time:.2f} s   -   min speed {profile.min_speed:.2f}"
-         f"   -   {profile.distance_ft:.1f} ft", ty + 76, 0.46, MUTED, 1),
-        ("Taking control of your computer...", ty + 126, 0.52, INK, 1),
-    )
-    for text, y, scale, color, thick in rows:
-        (tw, _), _ = cv2.getTextSize(text, FONT, scale, thick)
-        cv2.putText(canvas, text, (cx - tw // 2, y), FONT, scale, color, thick,
-                    cv2.LINE_AA)
-    return canvas
+    return draw_instruction_panel(canvas, profile, Config(), 1.0, corner="center")
 
 
 # ------------------------------------------------------------------ wizard

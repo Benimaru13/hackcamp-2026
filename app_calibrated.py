@@ -31,6 +31,7 @@ import numpy as np
 
 from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
                             SwitchDetector, cursor_radius_px, hand_scale)
+from instruction_panel import draw_instruction_panel
 from voice import Voice
 from zoom import ViewFollow, view_rect
 
@@ -386,6 +387,7 @@ def main(argv=None, profile=None, tracker=None):
     frames = detections = clicks = 0
     state = None
     diag_next = 0.0
+    panel_alpha, panel_fade = 1.0, None
     t_start = time.monotonic()
     switch_det = SwitchDetector(cfg.switch_hold, cfg.switch_cooldown)
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
@@ -527,6 +529,17 @@ def main(argv=None, profile=None, tracker=None):
                     "cursor_px": cursor_px,
                     "click": "hold still", "dry": args.dry_run},
                     mirror=cfg.mirror, halo=halo_in_preview)
+                # The instruction panel: up while control has not been taken yet,
+                # gone 0.6 s after the palm lands. No extra window, no focus to
+                # steal, and no added wait before the cursor works.
+                if out.state is ControlState.OFF:
+                    panel_alpha, panel_fade = 1.0, None
+                elif panel_alpha > 0.0:
+                    if panel_fade is None:
+                        panel_fade = current_time
+                    panel_alpha = max(0.0, 1.0 - (current_time - panel_fade) / 0.6)
+                if panel_alpha > 0.0:
+                    frame = draw_instruction_panel(frame, profile, cfg, panel_alpha)
                 cv2.imshow(WIN, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
