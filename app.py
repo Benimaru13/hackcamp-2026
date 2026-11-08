@@ -1,6 +1,6 @@
 """AirTrack demo entry point.
 
-    python app.py                 # run it, curl the hand into an "O" to take control
+    python app.py                 # run it, give a thumbs up to take control
     python app.py --dry-run       # detect + show the HUD, never touch the cursor
 
 The window shows the camera (mirrored, so it reads like a mirror), the current
@@ -208,8 +208,8 @@ def main(argv=None):
     halo_in_preview = glow is None or not glow.available
 
     print(f"AirTrack running ({tracker.width}x{tracker.height}).")
-    print('ARMED: curl the whole hand into an "O" (thumb tip on a fingertip) for '
-          'half a second to take control.')
+    print("ARMED: give a thumbs up (four fingers curled, thumb out) for half a "
+          "second to take control.")
     print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
     if args.dry_run:
         print("DRY RUN: the cursor will not move.")

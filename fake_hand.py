@@ -38,8 +38,8 @@ _EXTENDED = {
     "pinch": {"index"},
     "fist": set(),
     "relaxed": set(),
-    "o": set(),                                   # ring: every finger curled
-    "ok": {"middle", "ring", "pinky"},           # the OK sign: three fingers up
+    "thumbs_up": set(),                           # fingers curled, thumb out
+    "thumb_side": set(),                          # fingers curled, thumb sideways
 }
 
 _THUMB_OPEN = [(0.30, 0.02), (0.62, -0.22), (0.86, -0.46), (1.06, -0.68)]
@@ -48,14 +48,13 @@ _THUMB_OPEN = [(0.30, 0.02), (0.62, -0.22), (0.86, -0.46), (1.06, -0.68)]
 # to measure like a pinch. Only the knuckle distance keeps it out of the ring.
 _THUMB_TUCK = [(0.30, 0.02), (0.50, -0.35), (0.10, -0.80), (-0.18, -1.02)]
 
-# Poses where the thumb tip meets the index tip. Schematic: the thumb is drawn
-# longer than a real one, but the two numbers that decide the classification are
-# real -- the tip gap and the loop's distance from the index knuckle.
-_O_THUMB = [(0.30, 0.02), (0.18, -0.55), (-0.05, -1.05), (0.13, -1.29)]
-_O_INDEX = [(-0.36, -0.95), (-0.28, -1.33), (-0.10, -1.42), (0.12, -1.30)]
-_OK_THUMB = [(0.30, 0.02), (0.20, -0.45), (-0.05, -0.95), (0.05, -1.20)]
-_OK_INDEX = [(-0.36, -0.95), (-0.25, -1.30), (-0.10, -1.35), (0.04, -1.21)]
-_LOOP = {"o": (_O_THUMB, _O_INDEX), "ok": (_OK_THUMB, _OK_INDEX)}
+# Thumbs up: the fingers stay in the fist's curled positions and only the thumb
+# leaves the knuckles, so the pose differs from a fist by exactly the thing the
+# classifier measures. thumb_side is the negative case: same curled fingers with
+# the thumb held out sideways, which must not arm.
+_THUMB_UP = [(0.30, 0.02), (0.22, -0.40), (0.10, -0.85), (0.02, -1.35)]
+_THUMB_SIDE = [(0.30, 0.02), (0.60, -0.10), (0.90, -0.12), (1.15, -0.14)]
+_THUMBS = {"thumbs_up": _THUMB_UP, "thumb_side": _THUMB_SIDE}
 
 
 def hand_template_finger_tip(name="index"):
@@ -70,9 +69,8 @@ def hand_template(pose="point"):
     ext = _EXTENDED.get(pose, _EXTENDED["point"])
     pts = [(0.0, 0.0)]                      # 0 wrist
 
-    loop_thumb, loop_index = _LOOP.get(pose, (None, None))
-    if loop_thumb:
-        thumb = list(loop_thumb)
+    if pose in _THUMBS:
+        thumb = list(_THUMBS[pose])
     else:
         thumb = list(_THUMB_OPEN if pose != "fist" else _THUMB_TUCK)
     if pose == "pinch":
@@ -83,9 +81,6 @@ def hand_template(pose="point"):
     pts += thumb[:4]                        # 1..4 thumb
 
     for name in ("index", "middle", "ring", "pinky"):
-        if name == "index" and loop_index:
-            pts += list(loop_index)         # index folded into the circle
-            continue
         mcp, d = _FINGERS[name]
         n = math.hypot(*d)
         ux, uy = d[0] / n, d[1] / n

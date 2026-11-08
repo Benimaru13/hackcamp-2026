@@ -13,8 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_hand import FakeHand, palm_for_distance          # noqa: E402
 from gesture_cursor import (                               # noqa: E402
-    Config, ControlState, CursorController, classify_pose, is_fist, is_o_shape,
-    is_open_palm, is_pointing, loop_gap, pinch_gap, two_finger_direction)
+    Config, ControlState, CursorController, classify_pose, is_fist, is_open_palm,
+    is_pointing, is_thumbs_up, pinch_gap, two_finger_direction)
 
 DT = 1.0 / 30.0
 
@@ -42,8 +42,8 @@ class Rig:
         return self.out
 
     def arm(self):
-        self.run("o", 0.9)
-        assert self.ctrl.state is ControlState.ACTIVE, 'the "O" ring should arm'
+        self.run("thumbs_up", 0.9)
+        assert self.ctrl.state is ControlState.ACTIVE, "a thumbs up should arm"
 
 
 class PoseTests(unittest.TestCase):
@@ -54,12 +54,14 @@ class PoseTests(unittest.TestCase):
             self.assertEqual(classify_pose(hand.landmarks("palm")), "palm", d)
             self.assertEqual(classify_pose(hand.landmarks("fist")), "fist", d)
             self.assertEqual(classify_pose(hand.landmarks("pinch")), "pinch", d)
-            self.assertEqual(classify_pose(hand.landmarks("o")), "o", d)
-            self.assertNotEqual(classify_pose(hand.landmarks("ok")), "o", d)
+            self.assertEqual(classify_pose(hand.landmarks("thumbs_up")),
+                             "thumbs_up", d)
+            self.assertNotEqual(classify_pose(hand.landmarks("thumb_side")),
+                                "thumbs_up", d)
 
     def test_predicates_are_scale_invariant(self):
         for name, pred in (("point", is_pointing), ("palm", is_open_palm),
-                           ("fist", is_fist), ("o", is_o_shape)):
+                           ("fist", is_fist), ("thumbs_up", is_thumbs_up)):
             near = FakeHand(pose=name).at_distance(1.0).landmarks()
             far = FakeHand(pose=name).at_distance(3.0).landmarks()
             self.assertTrue(pred(near), name)
@@ -74,17 +76,18 @@ class PoseTests(unittest.TestCase):
             self.assertFalse(is_fist(pinch))
             self.assertLess(pinch_gap(pinch), 0.38)
 
-    def test_ring_and_fist_never_overlap(self):
-        """A fist is four curled fingers with the thumb on the knuckles; the ring is
-        the same fingers with the loop out past the knuckle. If these ever read
-        the same way, the stop gesture could take control."""
+    def test_thumbs_up_and_fist_never_overlap(self):
+        """A thumbs up is a fist with the thumb lifted off the knuckles. If the two
+        ever read the same way, the stop gesture could take control."""
         for d in (1.0, 3.0):
-            ring = FakeHand(pose="o").at_distance(d).landmarks()
+            thumb = FakeHand(pose="thumbs_up").at_distance(d).landmarks()
             fist = FakeHand(pose="fist").at_distance(d).landmarks()
-            self.assertLess(loop_gap(ring), 0.30, f"ring not closed at {d} m")
-            self.assertTrue(is_o_shape(ring), f"ring not recognised at {d} m")
-            self.assertFalse(is_o_shape(fist), f"fist read as a ring at {d} m")
-            self.assertTrue(is_fist(fist), f"fist not recognised at {d} m")
+            self.assertTrue(is_thumbs_up(thumb),
+                            f"thumbs up not recognised at {d} m")
+            self.assertFalse(is_thumbs_up(fist),
+                             f"fist read as a thumbs up at {d} m")
+            self.assertEqual(classify_pose(thumb), "thumbs_up", d)
+            self.assertEqual(classify_pose(fist), "fist", d)
 
     def test_rotated_hand_still_recognised(self):
         for angle in (-0.5, 0.0, 0.5):
@@ -114,12 +117,12 @@ class StateMachineTests(unittest.TestCase):
             self.assertEqual(out.state, ControlState.ARMED)
         self.assertEqual(rig.ctrl.pos, (rig.cfg.screen_w / 2, rig.cfg.screen_h / 2))
 
-    def test_ring_hold_arms_after_hold_time(self):
+    def test_thumbs_up_hold_arms_after_hold_time(self):
         rig = Rig(distance_m=3.0)
-        out = rig.run("o", 0.3)
+        out = rig.run("thumbs_up", 0.3)
         self.assertEqual(out.state, ControlState.ARMED, "armed too early")
         self.assertGreater(out.progress, 0.0)
-        rig.run("o", 0.4)
+        rig.run("thumbs_up", 0.4)
         self.assertEqual(rig.ctrl.state, ControlState.ACTIVE)
 
     def test_open_palm_does_not_arm(self):
@@ -128,21 +131,30 @@ class StateMachineTests(unittest.TestCase):
         self.assertEqual(out.state, ControlState.ARMED, "an open palm armed the app")
         self.assertEqual(out.progress, 0.0)
 
-    def test_ok_gesture_does_not_arm(self):
-        """The OK sign is thumb + index too, but three fingers are extended: it must
-        never take control."""
+    def test_fist_does_not_arm(self):
+        """The stop fist leaves its thumb on the knuckles, so it must never take
+        control."""
         rig = Rig(distance_m=3.0)
-        out = rig.run("ok", 1.5)
-        self.assertEqual(out.state, ControlState.ARMED, "the OK sign armed the app")
+        out = rig.run("fist", 1.5)
+        self.assertEqual(out.state, ControlState.ARMED, "a fist armed the app")
+
+    def test_sideways_thumb_does_not_arm(self):
+        """Curled fingers with the thumb held out to the side is not a thumbs up:
+        the thumb has to reach along the palm, not across it."""
+        rig = Rig(distance_m=3.0)
+        out = rig.run("thumb_side", 1.5)
+        self.assertEqual(out.state, ControlState.ARMED,
+                         "a sideways thumb armed the app")
+        self.assertEqual(out.progress, 0.0)
 
     def test_fist_releases_and_arm_cooldown_applies(self):
         rig = Rig(distance_m=3.0)
         rig.arm()
         rig.run("fist", 0.6)
         self.assertEqual(rig.ctrl.state, ControlState.ARMED, "fist should release")
-        rig.run("o", 0.4)                       # inside the cooldown
+        rig.run("thumbs_up", 0.4)               # inside the cooldown
         self.assertEqual(rig.ctrl.state, ControlState.ARMED)
-        rig.run("o", 1.0)
+        rig.run("thumbs_up", 1.0)
         self.assertEqual(rig.ctrl.state, ControlState.ACTIVE)
 
     def test_hand_lost_releases_control(self):
@@ -371,7 +383,7 @@ class ClickTests(unittest.TestCase):
     def test_a_two_second_point_hover_clicks_once(self):
         """The click gesture: hover the pointing hand ~2 s, nothing else."""
         ctrl = CursorController(Config())
-        hand = FakeHand(pose="o", seed=11).at_distance(3.0)
+        hand = FakeHand(pose="thumbs_up", seed=11).at_distance(3.0)
         t = 0.0
         for _ in range(int(1.0 / DT)):
             t += DT
@@ -384,15 +396,14 @@ class ClickTests(unittest.TestCase):
             clicks += ctrl.update(hand.landmarks(), now=t).action == "click"
         self.assertEqual(clicks, 1, "a still pointing hand should click once")
 
-    def test_arming_ring_never_clicks(self):
-        """The ring is a tight thumb-fingertip gap, i.e. pinch-shaped: the frame it
-        arms on must not also click."""
+    def test_arming_thumbs_up_never_clicks(self):
+        """The frame that takes control must not also click."""
         rig = Rig(distance_m=3.0)
         clicks = 0
         for _ in range(int(1.5 / DT)):
-            clicks += rig.run("o", DT).action == "click"
+            clicks += rig.run("thumbs_up", DT).action == "click"
         self.assertEqual(rig.ctrl.state, ControlState.ACTIVE)
-        self.assertEqual(clicks, 0, "the arming ring clicked")
+        self.assertEqual(clicks, 0, "the arming thumbs up clicked")
 
     def test_fist_never_clicks(self):
         """Closing the hand to stop must not also click."""

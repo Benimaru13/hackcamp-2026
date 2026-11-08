@@ -7,7 +7,7 @@ Built for the hands-occupied case — you are washing dishes, your hands are wet
 or you are just not within reach of the keyboard.
 
 ```
-python app.py                # run it; curl the hand into an "O" to take control
+python app.py                # run it; give a thumbs up to take control
 ```
 
 ---
@@ -21,7 +21,7 @@ python app.py                # run it; curl the hand into an "O" to take control
 | Cursor movement, distance independent | working, unit tested, measured |
 | Shake / jitter rejection | working, unit tested, measured |
 | Click | only with the pointing hand: hold it still ~2 s, unit tested |
-| Arming / releasing control | working: "O" ring to arm, fist to release |
+| Arming / releasing control | working: thumbs up to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical swipe | scrolls up/down, one wheel step per 0.15 s, ACTIVE only |
@@ -34,7 +34,7 @@ python app.py                # run it; curl the hand into an "O" to take control
 
 | Pose | Where | What happens |
 | --- | --- | --- |
-| 👌 "O": whole hand curled into a ring, thumb tip on a fingertip, held ~0.5 s | ARMED | takes control (becomes ACTIVE) |
+| 👍 Thumbs up: four fingers curled, thumb out past the knuckles, held ~0.5 s | ARMED | takes control (becomes ACTIVE) |
 | ☝️ Index finger only | ACTIVE | moves the cursor |
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
@@ -49,32 +49,38 @@ click, and a couple of pixels of sensor noise are not a move. It runs only while
 a fist, palm or pinch cancels the countdown instead of clicking on the way out of a
 gesture.
 
-**Why a ring, and not the "OK" sign or the "heart"?** All three are thumb + index,
-and two of them are gestures people make by accident. `is_o_shape()` therefore asks
-for the whole hand to close into a circle, and checks three things:
+**Why a thumbs up?** The arming gesture has failed in both directions, and the fix
+is to sit between them. The **open palm** was too *common*: it turns up in ordinary
+desk posture and armed the app by accident. The **"O" ring** was too *strict*: at
+3 m the thumb-to-fingertip gap is a few pixels, so it read as a fist and often did
+not arm at all. A thumbs up is rare in normal computer use (fingers curl, so you
+are not typing), and it separates itself from the stop fist with the one thing a
+fist cannot fake: the thumb.
 
-1. the thumb tip meets a fingertip (`loop_gap` < `O_RATIO`, 0.30 palm-lengths) --
-   the ring is actually closed;
-2. **every** finger is curled -- so the "OK" sign (three fingers up) and an open
-   palm never take control (`test_ok_gesture_does_not_arm`,
-   `test_open_palm_does_not_arm`);
-3. the loop sits more than `O_LOOP_PALM` (0.40 palm-lengths) from the index
-   knuckle -- a fist has the same curled fingers but keeps the thumb *down on the
-   knuckles*, so the stop gesture can never arm
-   (`test_ring_and_fist_never_overlap`).
+`is_thumbs_up()` asks for two things:
 
-Because a closed ring is also four curled fingers, the ring is classified before
-the fist, and the knuckle distance is what keeps the two apart at 10 ft. Taking
-control also suppresses clicks for one cooldown, so the ring that armed the app
-never fires a click on the frame it succeeds (`test_arming_ring_never_clicks`).
-The click is still a *still pointing hand*, so no other pose can fire one. An
-infinity sign is still a nice idea, but it is a motion, not a pose, and motion
-gestures are harder to keep from firing accidentally.
+1. **every** finger curled -- so an open palm, the pointing hand, a pinch and the
+   two-finger V can never take control (`test_open_palm_does_not_arm`,
+   `test_fist_does_not_arm`);
+2. the thumb reaching at least `THUMB_EXT` (0.22 palm-lengths) past the index
+   knuckle, measured along the palm's own axis -- a fist keeps its thumb on the
+   knuckles (~0.1), and a thumb held out sideways projects ~0
+   (`test_thumbs_up_and_fist_never_overlap`, `test_sideways_thumb_does_not_arm`).
+
+Projecting onto the palm axis instead of the screen's makes it rotation
+independent: tilt or roll the hand and the gesture still reads the same. A real
+thumbs up measures ~0.4-0.7, so the threshold sits in the *middle* of the gap
+between the two poses rather than at either edge -- loose enough to arm at 10 ft,
+tight enough that a fist or a sideways thumb never does. Because a thumbs up is
+also four curled fingers it is classified before the fist, and taking control
+suppresses clicks for one cooldown, so the pose that armed the app never clicks on
+the frame it succeeds (`test_arming_thumbs_up_never_clicks`). The click is still a
+*still pointing hand*, so no other pose can fire one.
 
 ### Interaction states
 
 ```
-            "O" ring held 0.5 s                 fist held 0.35 s
+            thumbs up held 0.5 s                fist held 0.35 s
    OFF  ---------------------->  ARMED  <------------------------->  ACTIVE
   (camera       (amber halo,    (cursor        (green halo,
    released)     "watching")      untouched)     gestures control the cursor)
@@ -143,7 +149,7 @@ Use `--dry-run` for the first setup pass: stand at 10 ft, watch the halo and the
 ## Spoken cues (ElevenLabs)
 
 The app can announce what it is doing, which matters when you are across the room
-and not looking at the halo: `sounds/activated.wav` plays when the "O" ring
+and not looking at the halo: `sounds/activated.wav` plays when a thumbs up
 takes control, `sounds/released.wav` when control is released.
 
 The audio is generated once and played from disk, so the demo itself needs no API
@@ -232,16 +238,16 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 45 tests, no camera needed
+python -m unittest discover -s tests -v   # 46 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
 two-finger direction at 1 m and 3 m (and that no other pose triggers it),
-the ring never reading as a fist and vice versa, the "OK" sign and an open palm
-never arming, the arming ring never clicking, a fist never clicking, arming only
-after the hold time, the arm
+a thumbs up never reading as a fist and vice versa, an open palm, a fist and a
+sideways thumb never arming, the arming frame never clicking, arming only after
+the hold time, the arm
 cooldown after a release, the lost-hand safety release, the same sweep moving the
 cursor the same distance near and far, no cursor drift from a shaky still hand, a
 2 s point hover clicking once where it settled, staying put never clicking twice,
