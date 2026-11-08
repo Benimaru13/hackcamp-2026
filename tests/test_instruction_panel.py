@@ -156,8 +156,8 @@ def test_footer_text_never_touches_the_ok_button():
         for h, w in ((720, 1280), (1080, 1920)):
             s = h / 720.0
             frame = _np.full((h, w, 3), 40, _np.uint8)
-            ip._ok_button = lambda img, r, _s, hover: real(
-                img, (r[0], r[1] + 80, r[2], r[3] + 80), _s, hover)
+            ip._ok_button = lambda img, r, _s, hover, progress=0.0: real(
+                img, (r[0], r[1] + 80, r[2], r[3] + 80), _s, hover, progress)
             out, ok = ip.draw_manual(frame, None, _Config(), hover=False)
             rows = _np.where((out[:ok[1], :, :].mean(axis=2) > 140).any(axis=1))[0]
             assert len(rows), f"{w}x{h}: the footer did not render"
@@ -165,3 +165,27 @@ def test_footer_text_never_touches_the_ok_button():
             assert gap >= int(20 * s), f"{w}x{h}: only {gap} px between footer and button"
     finally:
         ip._ok_button = real
+
+
+def test_manual_progress_fills_the_ok_button_from_the_left():
+    """A hand hold has to show on the button, and stop where the hold has got to."""
+    img = _frame()
+    _, ok = draw_manual(img, None, Config())
+    plain, _ = draw_manual(img, None, Config(), progress=0.0)
+    half, _ = draw_manual(img, None, Config(), progress=0.6)
+    x0, y0, x1, y1 = ok
+    left = (slice(y0 + 12, y1 - 12), slice(x0 + 20, x0 + 70))
+    right = (slice(y0 + 12, y1 - 12), slice(x1 - 70, x1 - 20))
+    assert np.abs(half[left].astype(int) - plain[left].astype(int)).sum() > 0
+    assert np.abs(half[right].astype(int) - plain[right].astype(int)).sum() == 0
+
+
+def test_fingertip_maps_to_the_pixels_the_manual_is_drawn_in():
+    import types as _t
+    from app_calibrated import manual_point
+    lm = [_t.SimpleNamespace(x=0.25, y=0.5) for _ in range(21)]
+    frame = _t.SimpleNamespace(landmarks=lm, width=1280, height=720)
+    assert manual_point(frame, None, False, 1280, 720) == (320, 360)
+    assert manual_point(frame, None, True, 1280, 720) == (1280 - 1 - 320, 360)
+    empty = _t.SimpleNamespace(landmarks=None, width=1280, height=720)
+    assert manual_point(empty, None, False, 1280, 720) is None

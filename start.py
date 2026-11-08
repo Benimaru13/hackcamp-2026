@@ -101,8 +101,15 @@ def run_sequence(args, calibrate_fn=None, control_fn=None, exists=os.path.exists
     return control_fn(args, profile)
 
 def welcome_message():
+    """Play the greeting without stopping the wizard.
+
+    `wait=True` held the calibration window frozen for the whole clip -- several
+    seconds of a window that looked hung, before a single frame had been drawn.
+    Playing it in the background lets the palm step start while it speaks, and
+    the user is reading the screen anyway.
+    """
     voice = Voice()
-    voice.say("start_message", wait=True)
+    voice.say("start_message", wait=False)
     print("Welcome to AirTrack. Please begin gesture calibration.")
 
 def main(argv=None):

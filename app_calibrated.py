@@ -47,6 +47,7 @@ COLORS = {
 # speed does not depend on the camera frame rate. SCROLL_STEP is how far one
 # wheel step moves; on macOS the sign follows System Settings > natural scrolling.
 SCROLL_STEP = 1
+MANUAL_HOLD = 1.0   # s a fingertip must stay on OK before the manual closes
 
 
 def _glow(frame, color, strength=1.0):
@@ -85,6 +86,30 @@ def _arc(img, center, radius, fraction, color, thickness=3):
            for i in range(n + 1)]
     cv2.polylines(img, [np.array(pts, dtype=np.int32)], False, color, thickness,
                   cv2.LINE_AA)
+
+
+def manual_point(fr, view, mirror, width, height):
+    """Where the fingertip is, in the pixels `draw_manual` draws into.
+
+    The preview is a zoomed, mirrored picture, so a raw landmark cannot be used:
+    this repeats the mapping draw_hud uses for the reticle (view crop first, then
+    mirror) so the hand points at the button exactly where the button appears.
+    Keep the two in step -- if one flips and the other does not, aiming at OK
+    lands on the opposite side of the screen.
+    """
+    if not fr.landmarks:
+        return None
+    fw = float(fr.width or width)
+    fh = float(getattr(fr, "height", 0) or height)
+    vx, vy, vw, vh = 0.0, 0.0, fw, fh
+    if view is not None:
+        v = view_rect(view[:2], view[2], fw, fh)
+        if v.w < fw and v.h > 1:
+            vx, vy, vw, vh = v.x0, v.y0, v.w, v.h
+    tip = fr.landmarks[8]
+    x = int((tip.x * fw - vx) * (width / max(vw, 1.0)))
+    y = int((tip.y * fh - vy) * (height / max(vh, 1.0)))
+    return (width - 1 - x if mirror else x), y
 
 
 def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
@@ -342,7 +367,8 @@ def main(argv=None, profile=None, tracker=None):
 
     # Manual state survives frames: open until OK, then out of the way.
     ui = {"open": True, "hover": False, "clicked": False,
-          "ok_rect": (0, 0, 0, 0), "frame_w": 1280.0}
+          "ok_rect": (0, 0, 0, 0), "frame_w": 1280.0,
+          "hold": 0.0, "progress": 0.0, "t_last": 0.0}
 
     def _on_mouse(event, mx, my, _flags, _param):
         # The window can be resized, so the button rect (frame pixels) is scaled
@@ -553,16 +579,28 @@ def main(argv=None, profile=None, tracker=None):
                     "click": "hold still", "dry": args.dry_run},
                     mirror=cfg.mirror, halo=halo_in_preview)
                 # The manual: a modal glass card that says how the app works
-                # before anything can move the cursor. Click OK (or space/enter)
-                # and the usual gestures are live; 'm' brings it back.
+                # before anything can move the cursor. Three ways out -- point at
+                # OK and hold (the camera is right there, so no mouse needed),
+                # click it, or press space/enter. 'm' brings it back.
                 if ui["open"]:
-                    frame, ok_rect = draw_manual(frame, profile, cfg, ui["hover"])
-                    ui["ok_rect"] = ok_rect
-                    ui["frame_w"] = float(frame.shape[1])
-                    if ui["clicked"]:
+                    pt = manual_point(fr, view, cfg.mirror, frame.shape[1],
+                                      frame.shape[0])
+                    on_ok = pt is not None and in_rect(ui["ok_rect"], pt[0], pt[1])
+                    dt = 0.0 if not ui["t_last"] else max(0.0, current_time - ui["t_last"])
+                    ui["t_last"] = current_time
+                    ui["hold"] = ui["hold"] + dt if on_ok else 0.0
+                    ui["progress"] = min(1.0, ui["hold"] / MANUAL_HOLD)
+                    if ui["progress"] >= 1.0 or ui["clicked"]:
                         ui["clicked"] = False
                         ui["open"] = False
+                        ui["hold"] = ui["progress"] = 0.0
                         print("Manual dismissed: raise an open palm to take control.")
+                    else:
+                        frame, ok_rect = draw_manual(
+                            frame, profile, cfg, hover=ui["hover"] or on_ok,
+                            progress=ui["progress"] if on_ok else 0.0)
+                        ui["ok_rect"] = ok_rect
+                        ui["frame_w"] = float(frame.shape[1])
                 cv2.imshow(WIN, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
@@ -589,6 +627,7 @@ def main(argv=None, profile=None, tracker=None):
                     cfg.min_speed = round(max(cfg.min_speed - 0.05, 0.05), 2)
                 elif key == ord("m"):
                     ui["open"] = True
+                    ui["hold"] = ui["progress"] = 0.0
 
             if args.frames and frames >= args.frames:
                 break

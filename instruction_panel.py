@@ -282,24 +282,34 @@ def in_rect(rect, x, y):
     return x0 <= x <= x1 and y0 <= y <= y1
 
 
-def _ok_button(canvas, rect, s, hover):
-    """Rounded OK button: filled teal on hover, outlined otherwise."""
+def _ok_button(canvas, rect, s, hover, progress=0.0):
+    """Rounded OK button: dark, filled teal on hover, washed in as a hand holds.
+
+    `progress` is how far a fingertip dwell has got, so "hold to press" is
+    visible from across the room instead of only reporting success at the end.
+    """
     x0, y0, x1, y1 = rect
     path = _rounded_path(x0, y0, x1, y1, int(12 * s))
-    if hover:
-        cv2.fillPoly(canvas, [path], ACCENT, cv2.LINE_AA)
-        ink, edge = (22, 28, 18), ACCENT
-    else:
-        cv2.fillPoly(canvas, [path], (52, 47, 40), cv2.LINE_AA)
-        ink, edge = ACCENT, ACCENT
-    cv2.polylines(canvas, [path], True, edge, max(1, int(2 * s)), cv2.LINE_AA)
+    cv2.fillPoly(canvas, [path], (52, 47, 40), cv2.LINE_AA)
+    prog = float(max(0.0, min(float(progress), 1.0)))
+    if prog > 0.02:
+        # Fill inside the button's own bounding box, clipped by its shape, so the
+        # rounded corners stay clean at any size.
+        bw, bh = x1 - x0, y1 - y0
+        sub = canvas[y0:y1, x0:x1]
+        mask = np.zeros((bh, bw), np.uint8)
+        cv2.fillPoly(mask, [_rounded_path(0, 0, bw, bh, int(12 * s))], 255)
+        mask[:, max(1, int(bw * prog)):] = 0
+        sub[mask > 0] = ACCENT
+    ink = (22, 28, 18) if (hover or prog > 0.5) else ACCENT
+    cv2.polylines(canvas, [path], True, ACCENT, max(1, int(2 * s)), cv2.LINE_AA)
     (tw, th), _ = cv2.getTextSize("OK", FONT, 0.52 * s, max(1, int(2 * s)))
     cv2.putText(canvas, "OK", ((x0 + x1 - tw) // 2, (y0 + y1 + th) // 2 - int(2 * s)),
                 FONT, 0.52 * s, ink, max(1, int(2 * s)), cv2.LINE_AA)
     return canvas
 
 
-def draw_manual(frame, profile=None, cfg=None, hover=False):
+def draw_manual(frame, profile=None, cfg=None, hover=False, progress=0.0):
     """The popup manual: dim the feed, one glass card, one centred OK button.
 
     The type is sized for a screen seen from a few metres, not for a desk: the
@@ -388,12 +398,12 @@ def draw_manual(frame, profile=None, cfg=None, hover=False):
 
     # Footer, then OK centred at the bottom of the card.
     fy = y0 + pad + title_h + head_h + body_h
-    footer = "space toggles control  -  Esc quits  -  m opens this again"
+    footer = "point at OK and hold  -  or click it  -  space closes  -  m reopens"
     (fw, _), _ = cv2.getTextSize(footer, FONT, 0.44 * s, 1)
     cv2.putText(out, footer, ((x0 + x1 - fw) // 2, fy + int(24 * s)), FONT,
                 0.44 * s, MUTED, 1, cv2.LINE_AA)
     bw, bh = int(260 * s), int(66 * s)
     bx0 = (x0 + x1) // 2 - bw // 2
     ok_rect = (bx0, y1 - pad - bh, bx0 + bw, y1 - pad)
-    out = _ok_button(out, ok_rect, s, hover)
+    out = _ok_button(out, ok_rect, s, hover, progress)
     return out, ok_rect

@@ -58,7 +58,7 @@ def test_a_fresh_start_calibrates_first_and_then_controls():
     assert order == ["calibrate", ("control", profile.jitter_score)]
 
 
-def test_welcome_message_plays_start_clip_and_waits(monkeypatch, capsys):
+def test_welcome_message_plays_without_blocking_the_wizard(monkeypatch, capsys):
     calls = []
 
     class _Voice:
@@ -67,7 +67,7 @@ def test_welcome_message_plays_start_clip_and_waits(monkeypatch, capsys):
 
     monkeypatch.setattr(start, "Voice", _Voice)
     start.welcome_message()
-    assert calls == [("start_message", True)]
+    assert calls == [("start_message", False)]  # must not block the wizard
     assert "begin gesture calibration" in capsys.readouterr().out
 
 

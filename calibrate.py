@@ -38,7 +38,6 @@ import numpy as np
 from calibrate_profile import DEFAULT_PATH, Profile, save_profile
 from calibration_math import JitterMeter, estimate_tremor
 from gesture_cursor import Config, estimate_distance_cm, hand_scale, is_arm_pose
-from instruction_panel import draw_instruction_panel
 
 ARM_SECONDS = 0.6
 MEASURE_SECONDS = 3.5
@@ -228,21 +227,6 @@ def render(image, step, progress, hint, chips=None, landmarks=None, mirror=True)
     return canvas
 
 
-def render_done(image, profile):
-    """The instruction panel, shown for a moment after the measurement.
-
-    Same glass panel the tracker opens with, so the handover is one continuous
-    screen: the numbers you just earned, then the four gestures, then control.
-    """
-    h, w = (image.shape[:2] if image is not None else (720, 1280))
-    if image is not None:
-        fitted, _, _, _ = _fit(image, w, h)
-        canvas = (fitted * 0.30).astype(np.uint8)
-    else:
-        canvas = np.full((h, w, 3), BG, np.uint8)
-    return draw_instruction_panel(canvas, profile, Config(), 1.0, corner="center")
-
-
 # ------------------------------------------------------------------ wizard
 def make_source(camera=0, model=None, width=1280, height=720, simulate=False,
                 distance_m=3.0):
@@ -363,11 +347,10 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
             print(f"\nMeasured, not written to disk ('--save' keeps it)\n"
                   f"  {profile.summary()}")
 
-        if show and last_image is not None:
-            for _ in range(15):          # flash the card ~0.3 s, then hand over
-                cv2.imshow(WIN, render_done(last_image, profile))
-                if (cv2.waitKey(20) & 0xFF) in (27, ord("q")):
-                    break
+        # No "done" card here on purpose. The control window opens straight into
+        # the manual, which says everything this card said and is modal; flashing
+        # a second, smaller panel for a third of a second first only looked like
+        # a glitch between the two screens.
         return profile
     finally:
         if not keep_open:
