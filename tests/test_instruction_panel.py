@@ -140,3 +140,28 @@ def test_in_rect_is_the_hit_test_the_click_uses():
     assert in_rect(rect, 60, 40)
     assert not in_rect(rect, 5, 40)
     assert not in_rect(rect, 60, 75)
+
+
+def test_footer_text_never_touches_the_ok_button():
+    """The hint line must clear the button by a real gap at any frame size.
+
+    The button is drawn shifted down for the measurement: its own antialiased
+    rim sits a pixel above `ok[1]`, which would otherwise be counted as text.
+    """
+    import numpy as _np
+    from gesture_cursor import Config as _Config
+    import instruction_panel as ip
+    real = ip._ok_button
+    try:
+        for h, w in ((720, 1280), (1080, 1920)):
+            s = h / 720.0
+            frame = _np.full((h, w, 3), 40, _np.uint8)
+            ip._ok_button = lambda img, r, _s, hover: real(
+                img, (r[0], r[1] + 80, r[2], r[3] + 80), _s, hover)
+            out, ok = ip.draw_manual(frame, None, _Config(), hover=False)
+            rows = _np.where((out[:ok[1], :, :].mean(axis=2) > 140).any(axis=1))[0]
+            assert len(rows), f"{w}x{h}: the footer did not render"
+            gap = ok[1] - int(rows.max()) - 1
+            assert gap >= int(20 * s), f"{w}x{h}: only {gap} px between footer and button"
+    finally:
+        ip._ok_button = real

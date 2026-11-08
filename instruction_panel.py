@@ -326,7 +326,7 @@ def draw_manual(frame, profile=None, cfg=None, hover=False):
     head_h = int(48 * s)
     row_h = int(58 * s)
     state_h = int(92 * s)
-    ok_h = int(104 * s)
+    ok_h = int(128 * s)
     body_h = max(state_h * len(states), row_h * len(gestures))
     pw = int(min(max(w * 0.90, 900 * s), w - int(20 * s)))
     ph = int(min(pad * 2 + title_h + head_h + body_h + ok_h, h - int(12 * s)))
@@ -390,7 +390,7 @@ def draw_manual(frame, profile=None, cfg=None, hover=False):
     fy = y0 + pad + title_h + head_h + body_h
     footer = "space toggles control  -  Esc quits  -  m opens this again"
     (fw, _), _ = cv2.getTextSize(footer, FONT, 0.44 * s, 1)
-    cv2.putText(out, footer, ((x0 + x1 - fw) // 2, fy + int(26 * s)), FONT,
+    cv2.putText(out, footer, ((x0 + x1 - fw) // 2, fy + int(24 * s)), FONT,
                 0.44 * s, MUTED, 1, cv2.LINE_AA)
     bw, bh = int(260 * s), int(66 * s)
     bx0 = (x0 + x1) // 2 - bw // 2
