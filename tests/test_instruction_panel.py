@@ -5,7 +5,7 @@ import numpy as np
 from calibrate_profile import Profile, TremorProfile
 from gesture_cursor import Config
 from instruction_panel import (_gestures, _states, _summary, draw_instruction_panel,
-                               frosted)
+                               draw_manual, frosted, in_rect)
 
 
 def _frame(w=1280, h=720):
@@ -107,3 +107,36 @@ def test_frosted_blurs_the_backdrop_it_covers():
     out = frosted(img.copy(), (100, 400, 600, 640), alpha=1.0, blur=25)
     assert not np.array_equal(out[500, 300], img[500, 300])
     assert np.array_equal(out[:300], img[:300])
+
+
+# --- the popup manual ------------------------------------------------------
+def test_manual_returns_an_ok_button_inside_the_frame():
+    img = _frame()
+    out, ok = draw_manual(img, None, Config())
+    assert out.shape == img.shape
+    assert 0 <= ok[0] < ok[2] <= img.shape[1]
+    assert 0 <= ok[1] < ok[3] <= img.shape[0]
+    assert (ok[2] - ok[0]) > 40 and (ok[3] - ok[1]) > 20
+
+
+def test_manual_dims_the_feed_behind_the_card():
+    img = _frame()
+    out, _ = draw_manual(img, None, Config())
+    assert int(out[0, 0].sum()) < int(img[0, 0].sum())
+
+
+def test_manual_hover_lights_the_button():
+    img = _frame()
+    plain, ok = draw_manual(img, None, Config(), hover=False)
+    hot, ok_hot = draw_manual(img, None, Config(), hover=True)
+    assert ok == ok_hot, "the button must not move under the pointer"
+    x0, y0, x1, y1 = ok
+    box = (slice(y0 + 4, y1 - 4), slice(x0 + 6, x1 - 6))
+    assert np.abs(hot[box].astype(int) - plain[box].astype(int)).sum() > 0
+
+
+def test_in_rect_is_the_hit_test_the_click_uses():
+    rect = (10, 20, 110, 70)
+    assert in_rect(rect, 60, 40)
+    assert not in_rect(rect, 5, 40)
+    assert not in_rect(rect, 60, 75)

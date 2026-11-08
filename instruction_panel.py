@@ -231,3 +231,166 @@ def draw_instruction_panel(frame, profile=None, cfg=None, alpha=1.0,
                      "fades when you take control",
                 (x, fy + int(22 * s)), FONT, 0.34 * s, MUTED, 1, cv2.LINE_AA)
     return out
+
+
+# ------------------------------------------------------------------ liquid glass
+def _shadow(canvas, box, radius, spread=22, strength=0.55):
+    """Soft drop shadow around the card, so it floats above the dimmed feed."""
+    x0, y0, x1, y1 = box
+    h, w = canvas.shape[:2]
+    bw, bh = max(x1 - x0, 1), max(y1 - y0, 1)
+    pad = int(spread * 3)
+    tmp = np.zeros((bh + 2 * pad, bw + 2 * pad), np.float32)
+    tmp[pad:pad + bh, pad:pad + bw] = _rounded_mask(bh, bw, radius)
+    blurred = cv2.GaussianBlur(tmp, (0, 0), spread)
+
+    ox, oy = x0 - pad, y0 - pad
+    xs, ys = max(0, ox), max(0, oy)
+    xe, ye = min(w, ox + blurred.shape[1]), min(h, oy + blurred.shape[0])
+    if xe <= xs or ye <= ys:
+        return canvas
+    sub = blurred[ys - oy:ye - oy, xs - ox:xe - ox]
+    region = canvas[ys:ye, xs:xe].astype(np.float32)
+    region *= 1.0 - np.clip(sub, 0.0, 1.0)[..., None] * float(strength)
+    canvas[ys:ye, xs:xe] = np.clip(region, 0, 255).astype(np.uint8)
+    return canvas
+
+
+def _specular(canvas, box, radius, amount=0.14):
+    """Light falling down the top of the card: what makes it read as a liquid."""
+    x0, y0, x1, y1 = box
+    bw, bh = max(x1 - x0, 1), max(y1 - y0, 1)
+    grad = np.linspace(1.0, 0.0, bh, dtype=np.float32).reshape(bh, 1) ** 1.8
+    grad = np.repeat(grad, bw, axis=1)
+    mask = _rounded_mask(bh, bw, radius)
+    layer = (grad * mask * float(amount))[..., None] * 255.0
+    roi = canvas[y0:y1, x0:x1].astype(np.float32)
+    canvas[y0:y1, x0:x1] = np.clip(roi + layer, 0, 255).astype(np.uint8)
+    return canvas
+
+
+def glass_card(canvas, box, radius=20, alpha=0.90):
+    """Frosted body + drop shadow + specular sheen: the panel as a glass sheet."""
+    canvas = _shadow(canvas, box, radius)
+    canvas = frosted(canvas, box, radius=radius, alpha=alpha, blur=27)
+    return _specular(canvas, box, radius)
+
+
+def in_rect(rect, x, y):
+    """Is (x, y) inside (x0, y0, x1, y1)? Used for the OK button hit test."""
+    x0, y0, x1, y1 = rect
+    return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def _ok_button(canvas, rect, s, hover):
+    """Rounded OK button: filled teal on hover, outlined otherwise."""
+    x0, y0, x1, y1 = rect
+    path = _rounded_path(x0, y0, x1, y1, int(12 * s))
+    if hover:
+        cv2.fillPoly(canvas, [path], ACCENT, cv2.LINE_AA)
+        ink, edge = (22, 28, 18), ACCENT
+    else:
+        cv2.fillPoly(canvas, [path], (52, 47, 40), cv2.LINE_AA)
+        ink, edge = ACCENT, ACCENT
+    cv2.polylines(canvas, [path], True, edge, max(1, int(2 * s)), cv2.LINE_AA)
+    (tw, th), _ = cv2.getTextSize("OK", FONT, 0.52 * s, max(1, int(2 * s)))
+    cv2.putText(canvas, "OK", ((x0 + x1 - tw) // 2, (y0 + y1 + th) // 2 - int(2 * s)),
+                FONT, 0.52 * s, ink, max(1, int(2 * s)), cv2.LINE_AA)
+    return canvas
+
+
+def draw_manual(frame, profile=None, cfg=None, hover=False):
+    """The popup manual: dim the feed, one glass card, one OK button.
+
+    Returns (image, ok_rect) where ok_rect is in FRAME pixels, so the caller can
+    hit-test a click against it after scaling for the displayed window size.
+    """
+    out = frame.copy()
+    h, w = out.shape[:2]
+    s = h / 720.0
+    out = np.clip(out.astype(np.float32) * 0.42, 0, 255).astype(np.uint8)
+
+    states = _states()
+    gestures = _gestures(cfg) if cfg is not None else (
+        ("1", "Open palm", "hold 0.6 s", "take control"),
+        ("2", "Point", "", "move the cursor"),
+        ("3", "Point, still", "hold 2.0 s", "one click"),
+        ("4", "Two fingers up/down", "hold", "scroll"),
+        ("5", "Two fingers left/right", "hold 0.6 s", "switch space"),
+        ("6", "Fist", "hold 0.35 s", "release"))
+
+    pad = int(34 * s)
+    title_h = int(50 * s)
+    head_h = int(40 * s)
+    row_h = int(32 * s)
+    state_h = int(58 * s)
+    ok_h = int(58 * s)
+    body_h = max(state_h * len(states), row_h * len(gestures)) + int(8 * s)
+    pw = int(min(max(w * 0.76, 720 * s), w - int(40 * s)))
+    ph = int(min(pad * 2 + title_h + head_h + body_h + ok_h, h - int(40 * s)))
+    x0, y0 = (w - pw) // 2, (h - ph) // 2
+    x1, y1 = x0 + pw, y0 + ph
+    out = glass_card(out, (x0, y0, x1, y1), radius=int(22 * s))
+
+    x = x0 + pad
+    right = x1 - pad
+    y = y0 + pad + int(22 * s)
+    cv2.putText(out, "AIRTRACK", (x, y), FONT, 0.72 * s, ACCENT,
+                max(1, int(2 * s)), cv2.LINE_AA)
+    (tw, _), _ = cv2.getTextSize("AIRTRACK", FONT, 0.72 * s, max(1, int(2 * s)))
+    cv2.putText(out, "how to use it", (x + tw + int(16 * s), y), FONT, 0.46 * s,
+                INK, 1, cv2.LINE_AA)
+    y += int(26 * s)
+    cv2.putText(out, "your hand is the mouse - nothing is clicked until you raise "
+                     "an open palm",
+                (x, y), FONT, 0.36 * s, MUTED, 1, cv2.LINE_AA)
+    summary = _summary(profile)
+    (sw_, _), _ = cv2.getTextSize(summary, FONT, 0.36 * s, 1)
+    cv2.putText(out, summary, (right - sw_, y), FONT, 0.36 * s, MUTED, 1, cv2.LINE_AA)
+    y += title_h - int(26 * s)      # title_h already covers the subtitle line
+    cv2.line(out, (x, y - int(10 * s)), (right, y - int(10 * s)), (74, 70, 64), 1,
+             cv2.LINE_AA)
+
+    left_w = int(pw * 0.34)
+    right_x = x + left_w
+    cv2.putText(out, "STATES", (x, y + int(12 * s)), FONT, 0.34 * s, MUTED, 1,
+                cv2.LINE_AA)
+    cv2.putText(out, "GESTURES", (right_x, y + int(12 * s)), FONT, 0.34 * s, MUTED,
+                1, cv2.LINE_AA)
+    y += head_h
+
+    for i, (name, color, meaning) in enumerate(states):
+        sy = y + i * state_h + int(14 * s)
+        cv2.circle(out, (x + int(6 * s), sy - int(4 * s)), int(6 * s), color, -1,
+                   cv2.LINE_AA)
+        cv2.putText(out, name, (x + int(20 * s), sy), FONT, 0.48 * s, color, 1,
+                    cv2.LINE_AA)
+        cv2.putText(out, meaning, (x, sy + int(20 * s)), FONT, 0.33 * s, MUTED, 1,
+                    cv2.LINE_AA)
+
+    for i, (num, gesture, hold, effect) in enumerate(gestures):
+        gy = y + i * row_h + int(16 * s)
+        cv2.circle(out, (right_x + int(9 * s), gy - int(4 * s)), int(9 * s), ACCENT,
+                   1, cv2.LINE_AA)
+        (nw, nh), _ = cv2.getTextSize(num, FONT, 0.32 * s, 1)
+        cv2.putText(out, num,
+                    (right_x + int(9 * s) - nw // 2, gy - int(4 * s) + nh // 2),
+                    FONT, 0.32 * s, ACCENT, 1, cv2.LINE_AA)
+        cv2.putText(out, gesture, (right_x + int(26 * s), gy), FONT, 0.42 * s, INK,
+                    1, cv2.LINE_AA)
+        if hold:
+            (gw, _), _ = cv2.getTextSize(gesture, FONT, 0.42 * s, 1)
+            cv2.putText(out, hold, (right_x + int(34 * s) + gw, gy), FONT, 0.34 * s,
+                        MUTED, 1, cv2.LINE_AA)
+        (ew, _), _ = cv2.getTextSize(effect, FONT, 0.38 * s, 1)
+        cv2.putText(out, effect, (right - ew, gy), FONT, 0.38 * s, INK, 1,
+                    cv2.LINE_AA)
+
+    # Footer + the button that hands over control.
+    fy = y0 + pad + title_h + head_h + body_h
+    cv2.putText(out, "space toggles control  -  Esc quits  -  m opens this again",
+                (x, fy + int(28 * s)), FONT, 0.34 * s, MUTED, 1, cv2.LINE_AA)
+    bw, bh = int(150 * s), int(44 * s)
+    ok_rect = (right - bw, y1 - pad - bh, right, y1 - pad)
+    out = _ok_button(out, ok_rect, s, hover)
+    return out, ok_rect

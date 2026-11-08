@@ -31,7 +31,7 @@ import numpy as np
 
 from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
                             SwitchDetector, cursor_radius_px, hand_scale)
-from instruction_panel import draw_instruction_panel
+from instruction_panel import draw_manual, in_rect
 from voice import Voice
 from zoom import ViewFollow, view_rect
 
@@ -340,11 +340,32 @@ def main(argv=None, profile=None, tracker=None):
     cfg.frame_w = tracker.width
 
 
+    # Manual state survives frames: open until OK, then out of the way.
+    ui = {"open": True, "hover": False, "clicked": False,
+          "ok_rect": (0, 0, 0, 0), "frame_w": 1280.0}
+
+    def _on_mouse(event, mx, my, _flags, _param):
+        # The window can be resized, so the button rect (frame pixels) is scaled
+        # by how much the displayed image was shrunk.
+        try:
+            win = cv2.getWindowImageRect(WIN)
+            scale = ui["frame_w"] / max(float(win[2]), 1.0)
+        except Exception:
+            scale = 1.0
+        fx, fy = mx * scale, my * scale
+        ui["hover"] = bool(ui["open"]) and in_rect(ui["ok_rect"], fx, fy)
+        if event == cv2.EVENT_LBUTTONUP and ui["hover"]:
+            ui["clicked"] = True
+
     if gui:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(WIN, 960, 540)
         try:
             cv2.setWindowProperty(WIN, cv2.WND_PROP_TOPMOST, 1)
+        except Exception:
+            pass
+        try:
+            cv2.setMouseCallback(WIN, _on_mouse)
         except Exception:
             pass
 
@@ -387,7 +408,6 @@ def main(argv=None, profile=None, tracker=None):
     frames = detections = clicks = 0
     state = None
     diag_next = 0.0
-    panel_alpha, panel_fade = 1.0, None
     t_start = time.monotonic()
     switch_det = SwitchDetector(cfg.switch_hold, cfg.switch_cooldown)
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
@@ -404,6 +424,9 @@ def main(argv=None, profile=None, tracker=None):
                 continue
             out = ctrl.update(fr.landmarks, time.monotonic())
             frames += 1
+            if ui["open"] and ctrl.state is not ControlState.OFF:
+                ctrl.disarm()   # a palm raised behind the manual must not arm
+
             detections += bool(fr.detected)
 
             current_time = time.monotonic()
@@ -427,7 +450,7 @@ def main(argv=None, profile=None, tracker=None):
             else:
                 scroll_det.reset()
                 scroll_step = 0
-            if scroll_step and pyautogui is not None and not args.dry_run:
+            if scroll_step and not ui["open"] and pyautogui is not None and not args.dry_run:
                 pyautogui.scroll(SCROLL_STEP * scroll_step)
             if scroll_det.direction != scroll_dir:
                 scroll_dir = scroll_det.direction
@@ -446,7 +469,7 @@ def main(argv=None, profile=None, tracker=None):
             else:
                 switch_det.reset()
                 switch = None
-            if switch:
+            if switch and not ui["open"]:
                 where = "previous" if switch == "left" else "next"
                 print(f"[{current_time - t_start:6.1f}s] ✌️ TWO FINGERS "
                       f"{switch.upper()} -> {where} space")
@@ -492,7 +515,7 @@ def main(argv=None, profile=None, tracker=None):
                                  float(fr.width or tracker.width),
                                  float(fr.height or tracker.height), view_dt)
 
-            if not args.dry_run and pyautogui is not None:
+            if not ui["open"] and not args.dry_run and pyautogui is not None:
                 try:
                     if out.action in ("move", "click"):
                         # The click lands on the hover anchor, not wherever the
@@ -529,22 +552,27 @@ def main(argv=None, profile=None, tracker=None):
                     "cursor_px": cursor_px,
                     "click": "hold still", "dry": args.dry_run},
                     mirror=cfg.mirror, halo=halo_in_preview)
-                # The instruction panel: up while control has not been taken yet,
-                # gone 0.6 s after the palm lands. No extra window, no focus to
-                # steal, and no added wait before the cursor works.
-                if out.state is ControlState.OFF:
-                    panel_alpha, panel_fade = 1.0, None
-                elif panel_alpha > 0.0:
-                    if panel_fade is None:
-                        panel_fade = current_time
-                    panel_alpha = max(0.0, 1.0 - (current_time - panel_fade) / 0.6)
-                if panel_alpha > 0.0:
-                    frame = draw_instruction_panel(frame, profile, cfg, panel_alpha)
+                # The manual: a modal glass card that says how the app works
+                # before anything can move the cursor. Click OK (or space/enter)
+                # and the usual gestures are live; 'm' brings it back.
+                if ui["open"]:
+                    frame, ok_rect = draw_manual(frame, profile, cfg, ui["hover"])
+                    ui["ok_rect"] = ok_rect
+                    ui["frame_w"] = float(frame.shape[1])
+                    if ui["clicked"]:
+                        ui["clicked"] = False
+                        ui["open"] = False
+                        print("Manual dismissed: raise an open palm to take control.")
                 cv2.imshow(WIN, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")):
                     break
-                elif key == ord(" "):
+                if ui["open"]:
+                    if key in (13, 32, ord("m")):
+                        ui["open"] = False
+                        print("Manual dismissed: raise an open palm to take control.")
+                    continue
+                if key == ord(" "):
                     if ctrl.state is ControlState.OFF:
                         ctrl.arm()
                     else:
@@ -559,6 +587,8 @@ def main(argv=None, profile=None, tracker=None):
                     cfg.min_speed = round(min(cfg.min_speed + 0.05, 2.0), 2)
                 elif key == ord("["):
                     cfg.min_speed = round(max(cfg.min_speed - 0.05, 0.05), 2)
+                elif key == ord("m"):
+                    ui["open"] = True
 
             if args.frames and frames >= args.frames:
                 break
