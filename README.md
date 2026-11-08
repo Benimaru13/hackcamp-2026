@@ -7,7 +7,7 @@ Built for the hands-occupied case — you are washing dishes, your hands are wet
 or you are just not within reach of the keyboard.
 
 ```
-python app.py                # run it; hold an open palm to take control
+python app.py                # run it; curl the hand into an "O" to take control
 ```
 
 ---
@@ -21,7 +21,7 @@ python app.py                # run it; hold an open palm to take control
 | Cursor movement, distance independent | working, unit tested, measured |
 | Shake / jitter rejection | working, unit tested, measured |
 | Click | only with the pointing hand: hold it still ~2 s, unit tested |
-| Arming / releasing control | working: open palm to arm, fist to release |
+| Arming / releasing control | working: "O" ring to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical swipe | scrolls up/down, one wheel step per 0.15 s, ACTIVE only |
@@ -34,7 +34,7 @@ python app.py                # run it; hold an open palm to take control
 
 | Pose | Where | What happens |
 | --- | --- | --- |
-| ✋ Open palm, held ~0.5 s | ARMED | takes control (becomes ACTIVE) |
+| 👌 "O": whole hand curled into a ring, thumb tip on a fingertip, held ~0.5 s | ARMED | takes control (becomes ACTIVE) |
 | ☝️ Index finger only | ACTIVE | moves the cursor |
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
@@ -49,19 +49,32 @@ click, and a couple of pixels of sensor noise are not a move. It runs only while
 a fist, palm or pinch cancels the countdown instead of clicking on the way out of a
 gesture.
 
-**Why not the "heart" the team liked?** The heart is made with thumb + index, which
-is a pinch -- and a pinch does nothing: the click is a *still pointing hand*, and
-arming is an **open palm** (all four fingers extended, thumb held away). Keeping the
-click on the pointing hand means no other pose can fire one, and `is_open_palm()`
-explicitly refuses a pinch (it needs a thumb-to-index gap above 0.55 palm-lengths);
-`test_palm_and_pinch_never_overlap` fails if the two ever overlap. An infinity sign
-is still a nice idea, but it is a motion, not a pose, and motion gestures are harder
-to keep from firing accidentally.
+**Why a ring, and not the "OK" sign or the "heart"?** All three are thumb + index,
+and two of them are gestures people make by accident. `is_o_shape()` therefore asks
+for the whole hand to close into a circle, and checks three things:
+
+1. the thumb tip meets a fingertip (`loop_gap` < `O_RATIO`, 0.30 palm-lengths) --
+   the ring is actually closed;
+2. **every** finger is curled -- so the "OK" sign (three fingers up) and an open
+   palm never take control (`test_ok_gesture_does_not_arm`,
+   `test_open_palm_does_not_arm`);
+3. the loop sits more than `O_LOOP_PALM` (0.40 palm-lengths) from the index
+   knuckle -- a fist has the same curled fingers but keeps the thumb *down on the
+   knuckles*, so the stop gesture can never arm
+   (`test_ring_and_fist_never_overlap`).
+
+Because a closed ring is also four curled fingers, the ring is classified before
+the fist, and the knuckle distance is what keeps the two apart at 10 ft. Taking
+control also suppresses clicks for one cooldown, so the ring that armed the app
+never fires a click on the frame it succeeds (`test_arming_ring_never_clicks`).
+The click is still a *still pointing hand*, so no other pose can fire one. An
+infinity sign is still a nice idea, but it is a motion, not a pose, and motion
+gestures are harder to keep from firing accidentally.
 
 ### Interaction states
 
 ```
-            open palm held 0.5 s                fist held 0.35 s
+            "O" ring held 0.5 s                 fist held 0.35 s
    OFF  ---------------------->  ARMED  <------------------------->  ACTIVE
   (camera       (amber halo,    (cursor        (green halo,
    released)     "watching")      untouched)     gestures control the cursor)
@@ -130,7 +143,7 @@ Use `--dry-run` for the first setup pass: stand at 10 ft, watch the halo and the
 ## Spoken cues (ElevenLabs)
 
 The app can announce what it is doing, which matters when you are across the room
-and not looking at the halo: `sounds/activated.wav` plays when the palm hold
+and not looking at the halo: `sounds/activated.wav` plays when the "O" ring
 takes control, `sounds/released.wav` when control is released.
 
 The audio is generated once and played from disk, so the demo itself needs no API
@@ -219,14 +232,16 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 40 tests, no camera needed
+python -m unittest discover -s tests -v   # 45 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
 two-finger direction at 1 m and 3 m (and that no other pose triggers it),
-"a pinch never counts as an open palm", arming only after the hold time, the arm
+the ring never reading as a fist and vice versa, the "OK" sign and an open palm
+never arming, the arming ring never clicking, a fist never clicking, arming only
+after the hold time, the arm
 cooldown after a release, the lost-hand safety release, the same sweep moving the
 cursor the same distance near and far, no cursor drift from a shaky still hand, a
 2 s point hover clicking once where it settled, staying put never clicking twice,

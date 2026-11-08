@@ -40,9 +40,9 @@ def scenario_still(distance_m, seconds=5.0):
     """Hand pointed at the screen and held still: the cursor must not wander."""
     ctrl, hand, cfg = _new(distance_m)
     t = 0.0
-    for _ in range(int(0.9 / DT)):                  # arm with a palm
+    for _ in range(int(0.9 / DT)):                  # arm with the "O" ring
         t += DT
-        ctrl.update(hand.landmarks(pose="palm"), now=t)
+        ctrl.update(hand.landmarks(pose="o"), now=t)
     t += DT
     ctrl.update(hand.landmarks(pose="point"), now=t)
     start = ctrl.pos
@@ -71,9 +71,9 @@ def scenario_move(distance_m, travel_cm=15.0, **cfg_kw):
     """Same physical sweep, near and far: cursor travel should match."""
     ctrl, hand, cfg = _new(distance_m, **cfg_kw)
     t = 0.0
-    for _ in range(30):                       # arm with a palm
+    for _ in range(30):                       # arm with the "O" ring
         t += DT
-        ctrl.update(hand.landmarks(pose="palm"), now=t)
+        ctrl.update(hand.landmarks(pose="o"), now=t)
     start = None
     steps = 30                                # 1 s of deliberate sweeping
     visible_w_cm = 240.0 * distance_m / 3.0
@@ -93,10 +93,10 @@ def scenario_move(distance_m, travel_cm=15.0, **cfg_kw):
 
 
 def scenario_gestures(distance_m=3.0):
-    """Full interaction: palm to arm, point to move, hold still to click, fist to stop."""
+    """Full interaction: "O" to arm, point to move, hold still to click, fist to stop."""
     logs = []
     ctrl = CursorController(Config())
-    hand = FakeHand(pose="palm", jitter=_jitter_norm(), seed=3).at_distance(distance_m)
+    hand = FakeHand(pose="o", jitter=_jitter_norm(), seed=3).at_distance(distance_m)
     t = 0.0
 
     def run(pose, seconds, dx_per_frame=0.0):
@@ -113,15 +113,15 @@ def scenario_gestures(distance_m=3.0):
         return out
 
     run("point", 0.5)                 # ignored: nothing armed yet
-    run("palm", 0.8)                  # arms
+    run("o", 0.8)                  # arms
     run("point", 0.6, dx_per_frame=0.004)
     run("point", 2.5)                 # hold still: click
     run("point", 0.5, dx_per_frame=-0.004)   # move away to a new spot
     run("point", 2.5)                 # hold still again: second click
     run("point", 0.4)
     run("fist", 0.6)                  # releases
-    run("palm", 0.4)                  # ignored: arm cooldown
-    run("palm", 1.0)                  # re-arms
+    run("o", 0.4)                     # ignored: arm cooldown
+    run("o", 1.0)                  # re-arms
     return logs
 
 

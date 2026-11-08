@@ -2,8 +2,8 @@
 gesture_cursor.py  --  AirTrack core logic (no camera, no OS calls)
 
 Pipeline:  MediaPipe landmarks
-        -> pose classification (point / palm / fist / pinch)
-        -> state machine   ARMED --(open palm held)--> ACTIVE --(fist held)--> ARMED
+        -> pose classification ("O" / point / palm / fist / pinch)
+        -> state machine   ARMED --("O" ring held)--> ACTIVE --(fist held)--> ARMED
         -> hand position converted to palm-lengths (identical at every distance)
         -> One Euro smoothing + deadzone in that space (shake tolerance)
         -> relative cursor movement + dwell click (pointing hand held still)
@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 PINCH_RATIO = 0.38        # thumb-index gap / palm length below which it is a pinch
+O_RATIO = 0.30            # thumb-to-fingertip gap / palm length for the arm ring
+O_LOOP_PALM = 0.40        # the ring must sit this far out from the index knuckle
 
 
 # ---------------------------------------------------------------- config
@@ -73,7 +75,9 @@ class Config:
     post_click_lock: bool = True
 
     # --- state machine ---------------------------------------------------
-    arm_hold: float = 0.55       # open palm held this long arms control
+    o_ratio: float = O_RATIO     # thumb-fingertip gap that counts as the ring
+    o_loop: float = O_LOOP_PALM  # how far the ring must sit from the index knuckle
+    arm_hold: float = 0.55       # the "O" ring held this long arms control
     stop_hold: float = 0.35      # fist held this long releases control
     arm_cooldown: float = 0.60   # ignore the arm gesture right after a release
     lost_timeout: float = 2.0    # hand gone this long while ACTIVE => release control
@@ -207,11 +211,44 @@ def pinch_gap(lm):
 
 def is_open_palm(lm):
     """All four fingers extended and the thumb held away from the index finger.
-    Deliberately excludes the pinch (thumb tip meets index tip), which is the
-    click pose -- the reason the "heart" gesture is not used for arming."""
+    Only a HUD label now: arming needs the stricter ring below."""
     if not all(fingers_up(lm)):
         return False
     return pinch_gap(lm) > 0.55
+
+
+def loop_gap(lm):
+    """Thumb tip to the NEAREST fingertip, in palm-lengths: ~0 once the hand is
+    closed into a ring, >0.5 for an open hand."""
+    s = max(hand_scale(lm), 1e-6)
+    return min(_d(lm[THUMB_TIP], lm[tip])
+               for tip in (INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP)) / s
+
+
+def is_o_shape(lm, ratio=O_RATIO, loop_dist=O_LOOP_PALM):
+    """Whole hand curled into a closed circle: the gesture that takes control.
+
+    This is the letter "O", not the "OK" sign. Three conditions make it
+    unambiguous, and each one rules out a gesture it must not be confused with:
+
+      * the thumb has to meet a fingertip (`loop_gap` < 0.30 palm-lengths) -- the
+        ring actually closes,
+      * every finger has to be curled, so the "OK" sign (three fingers extended)
+        and an open palm can never arm the app,
+      * the loop has to sit out past the index knuckle (more than 0.40
+        palm-lengths from it). A fist has the same curled fingers but keeps the
+        thumb *down on the knuckles*, ~0.2 palm-lengths away, so a fist can never
+        take control -- it stays the "stop" gesture.
+
+    Everything is divided by palm length, so the same hand reads the same at 1 m
+    and at 3 m.
+    """
+    if loop_gap(lm) >= ratio:
+        return False
+    if any(fingers_up(lm)):
+        return False
+    s = max(hand_scale(lm), 1e-6)
+    return _d(lm[THUMB_TIP], lm[INDEX_MCP]) / s > loop_dist
 
 
 def is_fist(lm):
@@ -224,11 +261,17 @@ def is_fist(lm):
     return all(_d(lm[tip], lm[WRIST]) < 1.45 * s for tip, _ in _FINGERS)
 
 
-def classify_pose(lm):
-    """Single label for the HUD. Precedence: fist (stop) beats pinch (click)
-    beats palm (arm) beats point (move)."""
+def classify_pose(lm, o_ratio=O_RATIO, o_loop=O_LOOP_PALM):
+    """Single label for the HUD. Precedence: the arming ring beats fist (stop)
+    beats pinch (click) beats palm beats point (move).
+
+    The ring is tested before the fist because a closed ring is also four curled
+    fingers; what separates them is how far the loop sits from the index knuckle
+    (see is_o_shape)."""
     if lm is None:
         return ""
+    if is_o_shape(lm, o_ratio, o_loop):
+        return "o"
     if is_fist(lm):
         return "fist"
     if pinch_gap(lm) < PINCH_RATIO:
@@ -278,9 +321,12 @@ class Gate:
                 self.on = True
                 self.rose = True
         else:
-            self._n_on = 0
             self._n_off += 1
-            if self.on and self._n_off >= self.exit_frames:
+            # A hold gesture survives a couple of dropped frames: at 3 m the
+            # landmarks flicker, and restarting the hold on every blink would
+            # make the ring impossible to complete.
+            if self._n_off >= self.exit_frames:
+                self._n_on = 0
                 self.on = False
         return self.on
 
@@ -339,7 +385,7 @@ class CursorController:
 
     def _reset_gates(self):
         c = self.cfg
-        self._g_palm = Gate(c.enter_frames, c.exit_frames)
+        self._g_o = Gate(c.enter_frames, c.exit_frames)
         self._g_fist = Gate(c.enter_frames, c.exit_frames)
         self._g_point = Gate(c.enter_frames, c.exit_frames)
 
@@ -376,6 +422,9 @@ class CursorController:
         self._reset_tracking()
         self._reset_gates()
         self._reset_dwell()
+        # the ring that opened control is also a tight thumb-fingertip gap, so make
+        # sure it cannot fire a click on the frame it succeeds
+        self._last_click = now
 
     # ---- cursor movement
     def _move_relative(self, lm, now, apply=True):
@@ -476,7 +525,7 @@ class CursorController:
     def update(self, lm, now=None) -> Output:
         now = time.monotonic() if now is None else now
         c = self.cfg
-        pose = classify_pose(lm)
+        pose = classify_pose(lm, c.o_ratio, c.o_loop)
         has_hand = lm is not None and hand_scale(lm) > 1e-6
         dist = estimate_distance_cm(lm, c.frame_w, c) if has_hand else 0.0
 
@@ -486,21 +535,21 @@ class CursorController:
         # every gate advances every frame, whatever the state
         if has_hand:
             self._last_seen = now
-        self._g_palm.update(now, pose == "palm", c.arm_hold)
+        self._g_o.update(now, pose == "o", c.arm_hold)
         self._g_fist.update(now, pose == "fist", c.stop_hold)
         self._g_point.update(now, pose == "point")
 
         # ------------------------------------------------ ARMED
         if self.state is ControlState.ARMED:
-            if self._g_palm.rose and now >= self._arm_ready_at:
+            if self._g_o.rose and now >= self._arm_ready_at:
                 self._enter_active(now)
                 return Output(self.state, *self.pos, action="armed", pose=pose,
                               distance_cm=dist, hint="control taken")
             prog = 0.0
-            hint = "hold an open palm to take control"
-            if pose == "palm" and now >= self._arm_ready_at:
-                prog = self._g_palm.hold_fraction(now, c.arm_hold)
-                hint = "keep holding..."
+            hint = 'curl the whole hand into an "O" to take control'
+            if pose == "o" and now >= self._arm_ready_at:
+                prog = self._g_o.hold_fraction(now, c.arm_hold)
+                hint = 'keep holding the "O"...'
             return Output(self.state, *self.pos, progress=prog, pose=pose,
                           distance_cm=dist, hint=hint)
 
@@ -517,6 +566,10 @@ class CursorController:
         action = None
         progress = 0.0
         if has_hand:
+            if self._g_point.rose:
+                # Unfolding the "O" into a point moves the fingertip half a palm in
+                # one frame; re-seed the smoothing so it cannot jump the cursor.
+                self._reset_tracking()
             if self._move_relative(lm, now, apply=self._g_point.on):
                 action = "move"
 
