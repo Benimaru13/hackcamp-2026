@@ -158,6 +158,32 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
     return frame
 
 
+def pointer_test(pyautogui, dry_run=False):
+    """Prove the OS is actually accepting synthetic mouse events.
+
+    A missing 'Accessibility' grant (macOS), a sandbox, or a security tool lets
+    pyautogui import cleanly and report a screen size while silently dropping
+    every event. The app then looks broken although its logic is perfect. Move
+    the pointer 80 px, check it arrived, put it back, and report the result.
+    """
+    if dry_run or pyautogui is None:
+        return None
+    try:
+        x, y = pyautogui.position()[:2]
+        pyautogui.moveTo(x + 80, y, _pause=False)
+        moved_x = pyautogui.position()[0]
+        pyautogui.moveTo(x, y, _pause=False)
+    except Exception as exc:
+        print(f"Pointer test: FAILED ({exc})")
+        return False
+    if abs(moved_x - (x + 80)) <= 2:
+        print("Pointer test: OK -- this process can move the real cursor.")
+        return True
+    print("Pointer test: FAILED -- the pointer did not move. On macOS grant the "
+          "terminal 'Accessibility' in System Settings > Privacy & Security.")
+    return False
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="AirTrack: gesture control for your computer")
     ap.add_argument("--camera", type=int, default=0)
@@ -176,6 +202,11 @@ def main(argv=None):
     ap.add_argument("--frames", type=int, default=0, help="stop after N frames (testing)")
     ap.add_argument("--profile", default=None,
                     help="calibration profile.json (default: next to this file)")
+    ap.add_argument("--verbose", action="store_true",
+                    help="print state/pose/distance twice a second, to see what "
+                         "is blocking the cursor")
+    ap.add_argument("--no-pointer-test", action="store_true",
+                    help="skip the startup check that the OS accepts mouse events")
     ap.add_argument("--mute", action="store_true", help="no spoken state cues")
     ap.add_argument("--no-glow", action="store_true",
                     help="no full-screen halo (the preview border is used instead)")
@@ -196,6 +227,8 @@ def main(argv=None):
 
     if pyautogui is not None:
         sw, sh = pyautogui.size()
+        if not args.no_pointer_test:
+            pointer_test(pyautogui, args.dry_run)
     else:
         sw, sh = Config.screen_w, Config.screen_h
 
@@ -219,6 +252,12 @@ def main(argv=None):
               f"this run uses the built-in defaults.")
 
     ctrl = CursorController(cfg)
+    print(f"Config: min_speed {cfg.min_speed:.2f}  min_cutoff {cfg.min_cutoff:.2f}  "
+          f"beta {cfg.beta:.2f}  dwell {cfg.dwell_time:.2f}s  "
+          f"speed {cfg.speed:.2f}  screen {cfg.screen_w}x{cfg.screen_h}")
+    if args.dry_run:
+        print("*** DRY RUN: the cursor will NOT move. Drop --dry-run to control "
+              "the computer. ***")
 
     try:
         tracker = HandTracker(camera=args.camera, width=args.width, height=args.height,
@@ -272,6 +311,7 @@ def main(argv=None):
 
     frames = detections = clicks = 0
     state = None
+    diag_next = 0.0
     t_start = time.monotonic()
     swipe_det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
@@ -287,6 +327,13 @@ def main(argv=None):
             detections += bool(fr.detected)
 
             current_time = time.monotonic()
+
+            if args.verbose and current_time >= diag_next:
+                diag_next = current_time + 0.5
+                print(f"  [{current_time - t_start:5.1f}s] {out.state.value:6s} "
+                      f"pose={out.pose or '-':10s} hand={out.distance_cm:4.0f}cm "
+                      f"action={(out.action or '-'):6s} "
+                      f"min_speed={cfg.min_speed:.2f} dwell={out.progress:.2f}")
 
             if glow is not None:
                 glow.update(out.state.value, current_time)
