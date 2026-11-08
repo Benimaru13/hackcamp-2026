@@ -26,7 +26,7 @@ python app.py                # run it; raise an open palm to take control
 | Aiming reticle | grows with camera distance while the pointing hand is live (HUD only) |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical, held | scrolls up/down, one wheel step every 0.15 s after a 0.2 s hold, ACTIVE only |
-| Sideways thumb, held 0.75 s | sends ctrl+← / ctrl+→ (previous / next space), ACTIVE only |
+| Two fingers pointed left/right, held 0.55 s | sends ctrl+← / ctrl+→ (previous / next space), then rests 1 s, ACTIVE only |
 | Volume / media keys | not in the MVP |
 
 ---
@@ -40,7 +40,7 @@ python app.py                # run it; raise an open palm to take control
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
 | ✌️ Two fingers, pointing up or down, held | ACTIVE | scrolls that way (a wheel step every 0.15 s, after a 0.2 s hold) |
-| 👍 Thumb straight out to one side, other fingers curled, held ~0.75 s | ACTIVE | sends ctrl+← / ctrl+→ (previous / next space) |
+| ✌️ Two fingers pointing left or right, held 0.55 s | ACTIVE | sends ctrl+← / ctrl+→ (previous / next space), then ignores input for 1 s |
 | — Esc / `q` / Ctrl-C | any time | quits, control released |
 
 Hovering is the only click, and it needs no extra pose: aim, stop moving, and after
@@ -78,20 +78,23 @@ for one cooldown, so the frame that arms never also clicks
 (`test_arming_palm_never_clicks`). The click is still a *still pointing hand*, so
 no other pose can fire one.
 
-**Why a held thumb for the switch?** Two earlier swipes failed for the same
+**Why two fingers, held, for the switch?** Two earlier swipes failed for the same
 reason: a swipe is a *stroke*, and a stroke has a return. Firing on the angle of
 the two-finger V fired with the hand standing still. Firing on sideways travel
 then fired on the return stroke as well — the hand comes back to where it started
 within a second, so one swipe became two commands, or the opposite one if the
-first was missed. A **hold** has nothing to misread: thumb straight out to the
-left or right, other fingers curled, held 0.75 s, one command. After that the
-hand has to drop the pose and a 1 s cooldown has to pass, so leaving the thumb up
-cannot repeat and putting your hand back cannot fire anything. It is built out of
-two big distances from the wrist (how far the thumb reaches, how sideways it
-sits), not fine joint angles, which makes it the one gesture here that gets
-*easier* to hit when you are deliberate. Because the pose is also a curled fist,
-`classify_pose()` reads the thumb before the fist — otherwise the switch would
-release control halfway through its own hold.
+first was missed. A **hold** has nothing to misread, so the gesture became a held
+direction. For a while that direction was a sideways thumb, and that was the wrong
+hand to build it on: a thumb held out is also a curled hand, so at 3 m it kept
+reading as the stop fist and released control halfway through its own hold. The
+two-finger V is the pose that already survives at 10 ft — it is the scroll gesture
+— so the switch is that same V turned a quarter turn: point it left or right, hold
+0.55 s, one command. Then the detector rests for 1 s and starts looking again, so
+keeping the V up repeats the command no faster than every 1.55 s and dropping it
+costs nothing. Because it is the same pose as the scroll, the *direction* decides
+which one you get: a sideways V can never scroll or move the cursor, and an
+upright or downward V can never switch. A held thumb is still read before the fist
+in `classify_pose()`, so a stray thumb can never release control either.
 
 ### Interaction states
 
@@ -268,10 +271,10 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 86 tests, no camera needed
+python -m unittest discover -s tests -v   # 87 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
-python simulate.py switch                 # thumb hold: when it fires, and no repeat
+python simulate.py switch                 # two-finger switch: hold, then the 1 s rest
 python simulate.py scroll                 # two-finger scroll: up vs down cadence
 python simulate.py focus                  # auto-zoom: hand share of the model input, 1-4 m
 python simulate.py cursor                 # aiming reticle size vs distance
@@ -298,7 +301,12 @@ the hand rests and re-centred when the hand leaves the middle, it resizes when t
 hand changes distance, the upscale is capped, the scan tiles cover the frame with
 the middle one first, and a far hand ends up several times larger in the model
 input than a whole-frame scan would make it. The reticle is covered too: bigger
-with distance, clamped at both ends, monotonic, and configurable.
+with distance, clamped at both ends, monotonic, and configurable. The screen
+switch is covered as timing: both directions fire after the 0.55 s hold and not
+before, the 1 s rest is enforced after a command (a flip during the rest does
+nothing), a held V repeats no faster than hold + rest, a direction flip restarts
+the hold, a dropped frame does not, and no other pose -- including the upright V
+that scrolls -- can fire it at all, or move the cursor.
 
 What is **not** verified yet: an actual person at 10 ft with a real webcam. The
 tracking pipeline runs on this machine (camera + model + frames), but the
@@ -325,12 +333,11 @@ sign problem.
   the fingertip in the preview -- `cursor_radius_px()` in `gesture_cursor.py`,
   tuned by `cursor_near_px` / `cursor_far_px` in `Config`. It only appears while
   the pointing hand is live in ACTIVE, so it never covers anything otherwise.
-- **A thumb held out is also a curled fist.** When the thumb does not reach far
-  enough from the wrist, `thumb_direction()` gives up and the pose falls through to
-  `fist`, which releases control mid-attempt -- which is why the screen-switch
-  gesture is being replaced with a two-finger one. Until then, hold the thumb
-  clearly out to the side; `THUMB_SIDE_REACH` in `gesture_cursor.py` is how far it
-  has to reach.
+- **A thumb held out is also a curled fist.** `thumb_direction()` only reports a
+  direction once the thumb reaches `THUMB_SIDE_REACH` palm-lengths from the wrist;
+  below that the pose falls through to `fist` and releases control mid-attempt. The
+  screen switch no longer uses the thumb (it is the two-finger point now), but the
+  thumb is still classified before the fist so a stray one cannot release control.
 - **Dim rooms still cost accuracy.** `tracker.py` brightens the frame handed to the
   model and always retries a full-frame scan, but a detector is still a detector:
   face a lamp, not a window, during the demo.

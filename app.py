@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
-                            SwipeDetector, cursor_radius_px)
+                            SwitchDetector, cursor_radius_px)
 from voice import Voice
 
 WIN = "AirTrack"
@@ -142,13 +142,13 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
         else:
             _arc(frame, (cx, cy), 30, out.progress, COLORS[out.state], 3)
             cv2.circle(frame, (cx, cy), 6, COLORS[out.state], -1, cv2.LINE_AA)
-        # Screen-switch hold: a second ring on the thumb tip, so a hold that is
-        # half done is visible from across the room.
-        swipe_progress = float(extra.get("swipe", 0.0))
-        if swipe_progress > 0.0:
-            thumb = fr.landmarks[4]
-            _arc(frame, (X(thumb.x), int(thumb.y * h)), 22, swipe_progress,
-                 (0, 220, 255), 3)
+        # Screen-switch hold: a second ring between the two fingertips, so a hold
+        # that is half done is visible from across the room.
+        switch_progress = float(extra.get("switch", 0.0))
+        if switch_progress > 0.0:
+            a, b = fr.landmarks[8], fr.landmarks[12]
+            _arc(frame, (X((a.x + b.x) / 2.0), int((a.y + b.y) / 2.0 * h)), 22,
+                 switch_progress, (0, 220, 255), 3)
 
     label = {"armed": "ARMED  (watching)", "active": "ACTIVE  (controlling)",
              "off": "OFF"}[out.state.value]
@@ -161,7 +161,7 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
             (f"zoom: {fr.zoom:.1f}x  hand {fr.fill * 100:.0f}% of crop"
              if fr.focused else "zoom: - (whole frame)"),
             f"{fr.fps:.0f} fps",
-            "switch: thumb left/right, hold 0.75 s",
+            "switch: two fingers left/right, hold 0.55 s, then 1 s rest",
             f"scroll: {extra.get('scroll', '-')}",
             f"speed {extra['speed']:.2f}  min speed {extra['min_speed']:.2f}",
             f"click: {extra['click']}{'  [DRY RUN]' if extra['dry'] else ''}"]
@@ -255,8 +255,8 @@ def main(argv=None):
     print("ARMED: raise an open palm toward the camera for half a second to "
           "take control.")
     print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
-    print("Switch space: thumb straight left/right, other fingers curled, hold "
-          "0.75 s (ACTIVE only).")
+    print("Switch space: point two fingers left or right, hold 0.55 s (ACTIVE "
+          "only), then a 1 s rest before it looks for input again.")
     print("Auto-zoom: on -- the crop follows the hand, like a camera focusing on it,"
           " so the hand fills the model's input at any distance."
           if tracker.zoom else "Auto-zoom: off (--no-zoom), whole-frame detection only.")
@@ -275,7 +275,7 @@ def main(argv=None):
     frames = detections = clicks = 0
     state = None
     t_start = time.monotonic()
-    swipe_det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
+    switch_det = SwitchDetector(cfg.switch_hold, cfg.switch_cooldown)
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
     scroll_dir = None
     reticle = None                 # smoothed aiming-reticle radius
@@ -313,17 +313,22 @@ def main(argv=None):
                 else:
                     print(f"[{current_time - t_start:6.1f}s] ✌️ scroll stopped")
 
-            # Screen switch: a sideways thumb HELD for 0.75 s. ACTIVE only -- it
-            # used to fire in every state, so it changed screens with nothing
-            # armed. It is a hold, not a swipe, so the return stroke of a hand
-            # gesture is not input at all.
-            swipe = swipe_det.update(fr.landmarks, current_time)
-            if swipe and out.state is ControlState.ACTIVE:
-                where = "previous" if swipe == "left" else "next"
-                print(f"[{current_time - t_start:6.1f}s] 👍 THUMB {swipe.upper()}"
-                      f" -> {where} space")
+            # Screen switch: two fingers pointed left or right, HELD 0.55 s, then
+            # a 1 s rest. ACTIVE only, and the detector is not even run otherwise:
+            # a hold completed in ARMED used to become the first switch of the
+            # session. It is a hold, not a swipe, so no return stroke is input.
+            if out.state is ControlState.ACTIVE:
+                switch = switch_det.update(fr.landmarks, current_time)
+            else:
+                switch_det.reset()
+                switch = None
+            if switch:
+                where = "previous" if switch == "left" else "next"
+                print(f"[{current_time - t_start:6.1f}s] ✌️ TWO FINGERS "
+                      f"{switch.upper()} -> {where} space")
                 if pyautogui is not None and not args.dry_run:
-                    pyautogui.hotkey("ctrl", swipe)
+                    pyautogui.hotkey("ctrl", switch)
+            switch_progress = switch_det.progress(current_time)
             if out.state is not state:
                 was_active = state is ControlState.ACTIVE
                 state = out.state
@@ -369,7 +374,7 @@ def main(argv=None):
             if gui:
                 frame = draw_hud(fr.image, out, fr, {
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
-                    "swipe": swipe_det.progress(current_time),
+                    "switch": switch_progress,
                     "scroll": scroll_det.direction or "-",
                     "cursor_px": cursor_px,
                     "click": "hold still", "dry": args.dry_run},

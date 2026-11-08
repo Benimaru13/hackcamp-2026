@@ -146,18 +146,19 @@ def scenario_scroll(distance_m=3.0, seconds=2.0):
     return rows
 
 
-def scenario_switch(distance_m=3.0):
-    """Screen switch: a sideways thumb held. Show when it fires, and that a thumb
-    left up cannot fire twice -- the return stroke failure that started this."""
-    from gesture_cursor import SwipeDetector
+def scenario_switch(distance_m=3.0, seconds=3.0):
+    """Screen switch: two fingers pointed left/right, held 0.55 s, then a 1 s rest.
+    Three seconds held, so the hold + rest cadence is visible."""
+    from gesture_cursor import SwitchDetector
     cfg = Config()
     rows = []
     for way in ("left", "right"):
-        det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
-        hand = FakeHand(pose="thumb_" + way).at_distance(distance_m)
+        det = SwitchDetector(cfg.switch_hold, cfg.switch_cooldown)
+        angle = math.pi / 2 if way == "left" else -math.pi / 2
+        hand = FakeHand(pose="two", angle=angle).at_distance(distance_m)
         t = 0.0
         fired = []
-        for _ in range(int(3.0 / DT)):          # three seconds, no release
+        for _ in range(int(seconds / DT)):      # held the whole time
             t += DT
             got = det.update(hand.landmarks(), t)
             if got:
@@ -270,13 +271,14 @@ def main(argv):
         print()
 
     if which in ("all", "switch"):
-        print("screen switch: sideways thumb held at 3 m, held 3 s without releasing")
+        print("screen switch: two fingers pointed left/right at 3 m, held 3 s "
+              "(0.55 s hold, then a 1 s rest)")
         for way, fired in scenario_switch():
             if fired:
-                when = ", ".join(f"{t:.2f}s '{d}'" for t, d in fired)
-                print(f"  thumb {way:<5}: {len(fired)} command(s) at {when}")
+                when = ", ".join(f"{t:.2f}s" for t, _ in fired)
+                print(f"  two {way:<5}: {len(fired)} command(s) at {when}")
             else:
-                print(f"  thumb {way:<5}: never fired")
+                print(f"  two {way:<5}: never fired")
         print()
 
     if which in ("all", "focus"):
