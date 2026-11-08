@@ -8,8 +8,13 @@ Three measurements, and nothing to press: the wizard advances on its own timers,
 so you can stand back and keep your hands in the air for the whole thing.
 
     1. raise an open palm      -- is the camera seeing a hand at all?
-    2. hold still for 4 s      -- how much your hand shakes (the jitter score)
-    3. keep pointing for 4 s   -- how big your hand looks from here (reference)
+    2. hold still, pointing    -- 3.5 s: how much you shake, and your hand size
+
+The shake and the hand size are caught in the same window on purpose. Two
+separate four-second holds added four seconds of dead time between launching the
+program and the cursor responding, and the palm length (wrist to middle knuckle)
+is the same whether the fingertip is trembling or not -- so there is nothing to
+gain by measuring it twice.
 
 It writes profile.json next to this file unless --no-save is given. `python
 start.py` runs this wizard on every start and drops straight into controlling the
@@ -35,8 +40,7 @@ from calibration_math import JitterMeter, estimate_tremor
 from gesture_cursor import Config, estimate_distance_cm, hand_scale, is_arm_pose
 
 ARM_SECONDS = 0.6
-STILL_SECONDS = 4.0
-REF_SECONDS = 4.0
+MEASURE_SECONDS = 3.5
 WIN = "AirTrack calibration"
 
 # --- the look ---------------------------------------------------------------
@@ -52,8 +56,7 @@ FONT = cv2.FONT_HERSHEY_DUPLEX
 
 STEPS = (
     ("Raise an open palm", "camera check - stand about 3 m back"),
-    ("Hold still", "how much your hand shakes"),
-    ("Keep pointing", "your hand's size at this distance"),
+    ("Hold still, pointing", "shake + hand size, 3.5 s"),
 )
 
 
@@ -245,28 +248,38 @@ def render_done(image, profile):
 
 
 # ------------------------------------------------------------------ wizard
+def make_source(camera=0, model=None, width=1280, height=720, simulate=False,
+                distance_m=3.0):
+    """The frame source, exposed so start.py can keep it open after measuring."""
+    return _Sim(distance_m) if simulate else _Camera(camera, model, width, height)
+
+
 def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     preview=True, width=1280, height=720, distance_m=3.0,
-                    save=True):
+                    save=True, source=None, keep_open=False):
     """Run the wizard and return the profile (None if cancelled).
 
     `save=False` keeps the measurement in memory only: start.py measures on
     every run and hands the profile straight to the tracker, so writing a file
     is a convenience (--save), never a requirement.
+
+    `source` + `keep_open` are how the camera survives the handover: reopening a
+    webcam costs a second or two and sometimes takes two tries, so start.py
+    passes the source it already has and takes it back still open.
     """
-    src = _Sim(distance_m) if simulate else _Camera(camera, model, width, height)
+    src = source if source is not None else make_source(
+        camera, model, width, height, simulate, distance_m)
     show = preview and not simulate
     cfg = Config()
     meter = JitterMeter()
     palms = []
     samples = []        # (t, x_px, y_px) of the fingertip, for the tremor estimate
-    tremor = None
     phase = "arm"
     phase_start = 0.0
     arm_since = None
     last_lm = None
     last_image = None
-    step_index = {"arm": 0, "still": 1, "ref": 2}
+    step_index = {"arm": 0, "measure": 1}
 
     if show:
         cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
@@ -297,35 +310,29 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                             else min((now - arm_since) / ARM_SECONDS, 1.0))
                 hint = "Raise an open palm toward the camera. Stand about 3 m back."
                 if progress >= 1.0:
-                    phase, phase_start = "still", now
+                    phase, phase_start = "measure", now
                     meter.reset()
-                    print("[1/3] hand found")
-            elif phase == "still":
+                    print("[1/2] hand found")
+            else:
+                # One window does both jobs: the fingertip gives the tremor, the
+                # wrist-to-knuckle span gives the distance. Nothing is asked of
+                # the user beyond holding still, which is the point.
                 if has_hand:
                     sx, sy = lm[8].x * width, lm[8].y * height
                     meter.push(sx, sy)
                     samples.append((now, sx, sy))
-                progress = min((now - phase_start) / STILL_SECONDS, 1.0)
-                hint = "Hold still - measuring how much your hand shakes."
-                if progress >= 1.0:
-                    phase, phase_start = "ref", now
-                    palms.clear()
-                    tremor = estimate_tremor(samples)
-                    print(f"[2/3] {tremor.describe()}")
-            else:
-                if has_hand:
                     palms.append(hand_scale(lm))
-                progress = min((now - phase_start) / REF_SECONDS, 1.0)
-                hint = "Keep pointing at the screen - measuring your hand size."
+                progress = min((now - phase_start) / MEASURE_SECONDS, 1.0)
+                hint = "Hold still and keep pointing - measuring your hand."
                 if progress >= 1.0:
                     break
 
             if show and last_image is not None:
                 chips = {}
-                if phase == "still":
+                if phase == "measure":
                     chips["jitter"] = f"{meter.rms:.1f} px   {meter.score}/100"
-                if phase == "ref" and last_lm is not None:
-                    chips["hand"] = f"{hand_scale(last_lm) * 100:.1f}% of frame"
+                    if last_lm is not None:
+                        chips["hand"] = f"{hand_scale(last_lm) * 100:.1f}% of frame"
                 if last_lm is not None:
                     dist = estimate_distance_cm(last_lm, width, cfg) / 30.48
                     if dist > 0:
@@ -334,15 +341,17 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                                        hint, chips, last_lm))
                 if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
                     print("Cancelled.")
+                    src.close()
                     return None
 
         palm = float(np.median(palms)) if palms else 0.0375
+        tremor = estimate_tremor(samples)
         dist_cm = estimate_distance_cm(last_lm, width, cfg) if last_lm is not None else 0.0
         distance_ft = dist_cm / 30.48 if dist_cm > 0 else 10.0
         profile = Profile.from_measurement(palm=palm, jitter_px=meter.rms,
                                            distance_ft=distance_ft, tremor=tremor)
-        print(f"[3/3] reference hand size {palm * 100:.2f}% of frame at "
-              f"{distance_ft:.1f} ft")
+        print(f"[2/2] {tremor.describe()}  -  hand {palm * 100:.2f}% of frame "
+              f"at {distance_ft:.1f} ft")
         if save:
             save_profile(profile, out_path)
             print(f"\nSaved {out_path}\n  {profile.summary()}")
@@ -351,13 +360,14 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                   f"  {profile.summary()}")
 
         if show and last_image is not None:
-            for _ in range(90):          # hold the card about 1.8 s
+            for _ in range(15):          # flash the card ~0.3 s, then hand over
                 cv2.imshow(WIN, render_done(last_image, profile))
                 if (cv2.waitKey(20) & 0xFF) in (27, ord("q")):
                     break
         return profile
     finally:
-        src.close()
+        if not keep_open:
+            src.close()
         if show:
             cv2.destroyAllWindows()
 

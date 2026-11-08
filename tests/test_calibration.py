@@ -168,6 +168,86 @@ def test_the_wizard_runs_headless_and_writes_a_profile(tmp_path):
     assert saved.arm_hold >= 0.55
 
 
+class _RealTimeSource:
+    """A frame source on the real clock, so wall time is actually measured."""
+
+    width = 1280
+    height = 720
+
+    def __init__(self, jitter_px=2.0):
+        import time
+        from fake_hand import FakeHand
+        self._time = time
+        self.hand = FakeHand(pose="palm", palm=palm_for_distance(3.0),
+                             jitter=jitter_px / 1280.0, seed=4)
+        self.closed = False
+
+    def read(self):
+        self._time.sleep(1 / 60.0)          # a camera cadence, not a busy loop
+        return self.hand.landmarks("palm"), None, self._time.monotonic()
+
+    def close(self):
+        self.closed = True
+
+
+def test_the_whole_wizard_takes_about_four_seconds(tmp_path):
+    """The budget that matters: the cursor should appear, not keep waiting."""
+    import time
+    from calibrate import run_calibration
+
+    src = _RealTimeSource()
+    started = time.monotonic()
+    profile = run_calibration(source=src, out_path=str(tmp_path / "profile.json"),
+                              preview=False, save=False, keep_open=True)
+    elapsed = time.monotonic() - started
+
+    assert profile is not None
+    assert elapsed < 6.0, f"calibration took {elapsed:.1f}s"
+    assert elapsed >= 3.5, f"measured only {elapsed:.1f}s of a 3.5 s window"
+    assert profile.palm > 0.0
+    assert src.closed is False           # kept open for the tracker
+
+
+def test_the_camera_is_closed_when_nobody_takes_it_over(tmp_path):
+    from calibrate import run_calibration
+
+    src = _RealTimeSource()
+    profile = run_calibration(source=src, out_path=str(tmp_path / "profile.json"),
+                              preview=False, save=False)
+    assert profile is not None
+    assert src.closed is True
+
+
+def test_a_cancelled_wizard_does_not_leak_the_camera():
+    """Esc must close the source even though keep_open was asked for."""
+    import numpy as np
+
+    import calibrate
+
+    class Source(_RealTimeSource):
+        def read(self):
+            return (self.hand.landmarks("palm"),
+                    np.full((120, 160, 3), 20, np.uint8),
+                    self._time.monotonic())
+
+    src = Source()
+    gui = ("namedWindow", "resizeWindow", "setWindowProperty", "imshow",
+           "waitKey", "destroyAllWindows")
+    saved_gui = {name: getattr(calibrate.cv2, name) for name in gui}
+    for name in gui:
+        setattr(calibrate.cv2, name, lambda *a, **k: None)
+    calibrate.cv2.waitKey = lambda *a, **k: 27          # Esc on the first frame
+    try:
+        profile = calibrate.run_calibration(source=src, preview=True, save=False,
+                                            keep_open=True)
+    finally:
+        for name, fn in saved_gui.items():
+            setattr(calibrate.cv2, name, fn)
+
+    assert profile is None
+    assert src.closed is True
+
+
 def test_random_shake_is_not_reported_as_a_tremor():
     """White noise has a spectral peak at some frequency; it is not a tremor."""
     for seed in (11, 12, 13):

@@ -27,11 +27,24 @@ import calibrate as wizard
 from calibrate_profile import DEFAULT_PATH, load_profile
 
 
+# The wizard's camera, kept open across the handover: reopening a webcam costs a
+# second or two and sometimes fails outright, exactly when the cursor is supposed
+# to appear. Nothing else in this file is stateful.
+_HANDOFF = {}
+
+
 def _calibrate(args):
-    return wizard.run_calibration(camera=args.camera, simulate=args.simulate,
-                                  out_path=args.profile, preview=not args.no_preview,
-                                  width=args.width, height=args.height,
-                                  save=getattr(args, "save", False))
+    source = wizard.make_source(camera=args.camera, simulate=args.simulate,
+                                width=args.width, height=args.height)
+    profile = wizard.run_calibration(camera=args.camera, simulate=args.simulate,
+                                     out_path=args.profile,
+                                     preview=not args.no_preview,
+                                     width=args.width, height=args.height,
+                                     save=getattr(args, "save", False),
+                                     source=source, keep_open=True)
+    if profile is not None:
+        _HANDOFF["tracker"] = getattr(source, "tracker", None)
+    return profile
 
 
 def _control(args, profile):
@@ -46,7 +59,8 @@ def _control(args, profile):
         argv.append("--no-pointer-test")
     if args.camera:
         argv += ["--camera", str(args.camera)]
-    return control_app.main(argv, profile=profile)
+    return control_app.main(argv, profile=profile,
+                            tracker=_HANDOFF.get("tracker"))
 
 
 def run_sequence(args, calibrate_fn=None, control_fn=None, exists=os.path.exists,

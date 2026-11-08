@@ -184,8 +184,13 @@ def pointer_test(pyautogui, dry_run=False):
     return False
 
 
-def main(argv=None, profile=None):
-    """`profile` lets start.py hand over a measurement made seconds ago."""
+def main(argv=None, profile=None, tracker=None):
+    """`profile` and `tracker` let start.py hand over what it just used.
+
+    Passing the tracker in means the camera is never closed and reopened between
+    measuring and controlling: that reopen was a second or two of nothing
+    happening right when the cursor is supposed to appear.
+    """
     ap = argparse.ArgumentParser(description="AirTrack: gesture control for your computer")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--width", type=int, default=1280)
@@ -264,8 +269,13 @@ def main(argv=None, profile=None):
               "the computer. ***")
 
     try:
-        tracker = HandTracker(camera=args.camera, width=args.width, height=args.height,
-                              model=args.model or DEFAULT_MODEL, zoom=not args.no_zoom)
+        if tracker is None:
+            tracker = HandTracker(camera=args.camera, width=args.width,
+                                  height=args.height,
+                                  model=args.model or DEFAULT_MODEL,
+                                  zoom=not args.no_zoom)
+        else:
+            print("Camera kept open from the calibration: no reopen, no wait.")
     except Exception as exc:
         print(f"camera/model error: {exc}")
         return 1
