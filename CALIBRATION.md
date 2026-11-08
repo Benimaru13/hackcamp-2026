@@ -2,34 +2,56 @@
 
 `gesture_cursor.py`, `app.py`, `tracker.py` and `simulate.py` are the other
 branches' code and are **not modified here**. This adds the missing first step:
-a calibrator that measures *your* hand at *your* distance and writes
-`profile.json`.
+a calibrator that measures *your* hand at *your* distance, and a copy of the
+tracker loop (`app_calibrated.py`) that runs on the result.
 
 ## Run it
 
-- VS Code: **F5 → "AirTrack: calibrate"**
-- Terminal: `python calibrate.py`
-- No camera: `python calibrate.py --simulate --no-preview`
+- **`python start.py`** — measure this hand, then control the computer. This is
+  the normal one: measuring is the default, so a weak hand and a shaking hand
+  each get numbers from *today*.
+- `python start.py --dry-run --verbose` — safe first run, pointer untouched.
+- `python start.py --save` — keep this measurement in `profile.json`.
+- `python start.py --use-saved` — reuse that file instead of measuring.
+- `python calibrate.py` — the wizard on its own (writes `profile.json`).
+- `python calibrate.py --simulate --no-preview` — no camera, synthetic hand.
 
-Three timed steps, nothing to press (so it works standing back from the laptop):
+Two timed steps, nothing to press (so it works standing back from the laptop):
 
 | Step | Gesture | Measures |
 |---|---|---|
 | 1 | raise an open palm | that the camera sees a hand at all |
-| 2 | hold still, 4 s | jitter, in pixels → the 0-100 score |
-| 3 | keep pointing, 4 s | your hand size, the reference for distance |
+| 2 | hold still, pointing, 3.5 s | your shake (Hz and px) **and** your hand size |
 
-Output: `profile.json` (gitignored — it is personal).
+The shake and the hand size come from the same window on purpose: the palm
+length (wrist to middle knuckle) does not change while the fingertip trembles,
+and a second four-second hold was four seconds of waiting for nothing.
+
+**No gap between measuring and controlling.** The wizard's camera is kept open
+and handed to the tracker, so nothing reopens a webcam at the moment the cursor
+is supposed to appear. Measured end to end: **~4.1 s** (0.6 s arm + 3.5 s
+measuring) from launch to controlling, against ~10 s before.
 
 ## What the numbers do
 
-- **jitter score** — RMS of frame-to-frame acceleration of the raw point.
-  100 = rock steady. It drives everything below.
+- **tremor_hz / tremor_px** — the dominant periodic component of a still hand,
+  found with a coarse DFT over the hold-still window (2–12 Hz). A steady hand
+  reports `0 Hz`; white noise is not promoted to a tremor.
+- **jitter_px / jitter_score** — RMS of frame-to-frame acceleration of the raw
+  point. 100 = rock steady.
 - **min_speed** — the hand must exceed this (palm-lengths/s) before the cursor
-  moves, so shake never passes it. Rises with jitter.
-- **min_cutoff / beta** — One Euro smoothing. Shaky hands get a lower cutoff.
+  moves, so shake never passes it. Starts at the team default (1.00) and rises
+  with the measured tremor, capped at 2.20.
+- **min_cutoff / beta** — One Euro smoothing. A tremor lowers the cutoff and
+  *caps beta*, so a fast wobble cannot reopen the filter the way it does at the
+  default beta.
 - **dwell_time / dwell_radius** — how long the point must hold, and how much
-  wobble restarts it. Rises with jitter.
+  wobble restarts it. Both rise with tremor.
+- **arm_hold / swipe_hold** — how long the palm and the thumb must be held to
+  arm and to switch screens. Both rise with tremor.
+- **Every setting is floored at the team's own default**, so calibrating can
+  never make control twitchier than the branch it came from; a steady hand gets
+  the defaults back.
 - **palm** — your hand's normalized size at the calibrated distance. The ring
   size is `18 px × (distance_ratio ** 0.85)`, clamped to 2.4×, so it grows as
   you step back (the OS pointer itself cannot resize).
@@ -46,7 +68,10 @@ apply_to_config(cfg, load_profile(DEFAULT_PATH))   # after cfg = Config(...)
 
 `apply_to_config` imports nothing from `gesture_cursor`; it only sets attributes
 that `Config` already has (`ref_palm` is skipped if the branch lacks it).
+`start.py` already does exactly this, in memory, on every launch.
 
 ## Tests
 
-`python -m pytest tests/test_calibration.py` — pure logic, no camera, no GUI.
+`python -m pytest tests/test_calibration.py tests/test_start.py tests/test_app_calibrated.py`
+— pure logic, no camera, no GUI. `tests/test_hud.py` belongs to the tracker
+branch and needs `mediapipe` installed.
