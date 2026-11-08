@@ -17,12 +17,13 @@ python app.py                # run it; raise an open palm to take control
 | Piece | Status |
 | --- | --- |
 | Hand tracking from the webcam | working (MediaPipe HandLandmarker, Tasks API) |
-| Long-range tracking (~10 ft) | ROI crop + upscale implemented; needs a real 3 m camera test |
+| Long-range tracking (~10 ft) | auto-zoom: the crop follows the hand so the hand fills ~55% of the model input at 1 m and at 4 m, plus a tile scan to acquire a far hand; needs a real 3 m camera test |
 | Cursor movement, distance independent | working, unit tested, measured |
 | Shake / jitter rejection | working, unit tested, measured |
 | Click | only with the pointing hand: hold it still ~2 s, unit tested |
 | Arming / releasing control | working: raised open palm to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
+| Aiming reticle | grows with camera distance while the pointing hand is live (HUD only) |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical, held | scrolls up/down, one wheel step every 0.15 s after a 0.2 s hold, ACTIVE only |
 | Sideways thumb, held 0.75 s | sends ctrl+← / ctrl+→ (previous / next space), ACTIVE only |
@@ -209,11 +210,21 @@ to start**: lower it. If the cursor is **too fast to aim**: lower `-` (`--speed`
 
 Three separate problems, solved separately:
 
-1. **The hand is tiny at 10 ft.** In a 720p frame the hand is only ~30–60 px tall,
-   and the detector starts missing it. `tracker.py` keeps a box around the last
-   hand, crops it, and scales that crop to 512 px before detection, then maps the
-   landmarks back to full-frame coordinates. When the hand is lost it rescans the
-   whole frame (downscaled, so it is cheap) to reacquire.
+1. **The hand is tiny at 10 ft.** The detector resizes its input to a fixed size,
+   so what decides whether a hand is findable is how much of that input it fills:
+   about **13% at 3 m** in a whole 720p frame, against **40% at 1 m**. The same
+   gesture gets harder the further you stand. `tracker.py` therefore **auto-zooms**:
+   `zoom.py` plans a square crop just big enough to hold the hand, the crop is
+   upscaled and *that* is what the model gets, so the hand fills the same ~55% of
+   the input at 1 m and at 4 m. The crop follows the hand and is held unchanged
+   while the hand rests in its middle, so the zoom does not shiver. While nothing
+   is tracked the frame is cut into overlapping tiles and one tile per frame is
+   tried at full upscale, which is how a hand too small for a whole-frame detection
+   gets acquired in the first place; the whole frame stays as the last resort.
+   Landmarks are mapped back to full-frame coordinates, so the mirrored preview and
+   the cursor mapping behave exactly as before. `python simulate.py focus` prints
+   the numbers, and the HUD shows `zoom: 2.9x  hand 55% of crop` next to the crop
+   rectangle -- literally what the model is looking at.
 2. **Distance changes sensitivity.** Every position and threshold is converted to
    **palm-lengths** (wrist → middle knuckle, ~9 cm). The same 15 cm hand sweep
    therefore moves the cursor the same number of pixels at 1 m and at 3 m.
@@ -257,11 +268,13 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 63 tests, no camera needed
+python -m unittest discover -s tests -v   # 86 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 python simulate.py switch                 # thumb hold: when it fires, and no repeat
 python simulate.py scroll                 # two-finger scroll: up vs down cadence
+python simulate.py focus                  # auto-zoom: hand share of the model input, 1-4 m
+python simulate.py cursor                 # aiming reticle size vs distance
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
@@ -278,7 +291,14 @@ exactly once in each direction at 1 m, 2 m and 3 m, it does not fire before
 or a release restarts it, and a couple of dropped frames do not. Scroll is tested
 the same way: up and down stream the same number of wheel steps, down works at all,
 a reversal waits for its hold, no other pose scrolls, and a blink does not stop
-the stream.
+the stream. The auto-zoom is tested as geometry, no camera involved: the planned
+crop gives the hand the same share of the model input at 1, 1.5, 2, 3 and 4 m, it
+stays square and inside the frame at the frame edges, it is reused unchanged while
+the hand rests and re-centred when the hand leaves the middle, it resizes when the
+hand changes distance, the upscale is capped, the scan tiles cover the frame with
+the middle one first, and a far hand ends up several times larger in the model
+input than a whole-frame scan would make it. The reticle is covered too: bigger
+with distance, clamped at both ends, monotonic, and configurable.
 
 What is **not** verified yet: an actual person at 10 ft with a real webcam. The
 tracking pipeline runs on this machine (camera + model + frames), but the
@@ -300,6 +320,17 @@ to the direction you point, flip the sign of `pyautogui.scroll(...)` in `app.py`
 (one line). The HUD now shows the direction the app currently reads
 (`scroll: up`/`down`), which is the fastest way to tell a detection problem from a
 sign problem.
+- **The magnifier is the HUD reticle, not the system pointer.** macOS owns the
+  pointer and it cannot be resized; what grows with distance is the ring drawn at
+  the fingertip in the preview -- `cursor_radius_px()` in `gesture_cursor.py`,
+  tuned by `cursor_near_px` / `cursor_far_px` in `Config`. It only appears while
+  the pointing hand is live in ACTIVE, so it never covers anything otherwise.
+- **A thumb held out is also a curled fist.** When the thumb does not reach far
+  enough from the wrist, `thumb_direction()` gives up and the pose falls through to
+  `fist`, which releases control mid-attempt -- which is why the screen-switch
+  gesture is being replaced with a two-finger one. Until then, hold the thumb
+  clearly out to the side; `THUMB_SIDE_REACH` in `gesture_cursor.py` is how far it
+  has to reach.
 - **Dim rooms still cost accuracy.** `tracker.py` brightens the frame handed to the
   model and always retries a full-frame scan, but a detector is still a detector:
   face a lamp, not a window, during the demo.
@@ -316,7 +347,8 @@ sign problem.
 | File | What it is |
 | --- | --- |
 | `gesture_cursor.py` | all interaction logic: poses, states, mapping, smoothing, clicks. No camera, no OS calls — this is the part anyone can test anywhere. |
-| `tracker.py` | camera + MediaPipe HandLandmarker + long-range ROI zoom |
+| `tracker.py` | camera + MediaPipe HandLandmarker + the auto-zoom pipeline |
+| `zoom.py` | auto-zoom planning: follow-crop around the hand, acquire-scan tiles (pure maths, no camera) |
 | `edge_glow.py` | the full-screen click-through state halo (PyObjC/AppKit, macOS; optional, falls back to the preview border) |
 | `app.py` | the demo: wiring, PyAutoGUI control, HUD and screen halo |
 | `fake_hand.py` | synthetic hands (tests and simulation) |
@@ -326,6 +358,8 @@ sign problem.
 | `sounds/` | generated cue clips, see `sounds/README.md` |
 | `tests/test_voice.py` | WAV wrapping and silent-fallback tests |
 | `tests/test_gesture_cursor.py` | unit tests |
+| `tests/test_zoom.py` | auto-zoom geometry tests |
+| `tests/test_magnifier.py` | distance-scaled reticle tests |
 | `mediapipe-setup.py` | camera sanity check (does the webcam open at all?) |
 | ~~`gesture_detector.py`, `test_run.py`~~ | teammate prototype of a dwell-click detector, removed from the working tree (it used `mp.solutions.hands`, which mediapipe 1.2.2 no longer provides). Recoverable from the `gesture-control` commit if needed. |
 

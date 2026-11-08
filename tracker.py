@@ -1,10 +1,21 @@
 """tracker.py  --  webcam + MediaPipe HandLandmarker, tuned for long range.
 
-Why this exists on top of MediaPipe: at ~3 m (10 ft) the hand is only ~30-60 px
-tall in a 720p frame and the detector starts missing it. This tracker keeps a box
-around the last hand, crops it and upscales it to 512 px before detection, so the
-hand looks big to the model again. When the hand is lost it re-scans the whole
-frame (downscaled) to reacquire.
+Why this exists on top of MediaPipe: the detector resizes whatever image it is
+given to its own fixed input, so the only thing that decides whether a hand is
+findable is how much of that input the hand fills. In a whole 720p frame a hand at
+3 m fills ~13% of it, and a hand at 1 m fills ~40% -- the same gesture gets harder
+the further away you stand.
+
+So the tracker auto-zooms, like a camera focusing on the hand (the planning is in
+zoom.py, which is pure arithmetic and unit tested without a camera):
+
+  * focus -- the last hand is cropped to a square just big enough to hold it, and
+    that crop is what the model sees, so the hand fills the same ~55% of the input
+    at 1 m and at 4 m. The crop follows the hand and holds still while the hand
+    rests in its middle.
+  * scan -- while nothing is tracked the frame is cut into overlapping tiles and
+    one tile is tried per frame, each upscaled hard, so a hand too small for a
+    full-frame detection is still found. The whole frame stays as the last resort.
 
 Nothing here draws anything and nothing leaves the machine: frames are only ever
 held in memory and are never written to disk or sent anywhere.
@@ -23,6 +34,8 @@ import mediapipe as mp
 import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
+
+from zoom import (DEADBAND, FILL, Rect, hand_fill, plan_crop, scan_tiles)
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
              "hand_landmarker/float16/1/hand_landmarker.task")
@@ -70,6 +83,9 @@ class Frame:
     landmarks: list | None = None        # 21 points, normalized to the FULL frame
     box: tuple | None = None             # (x0, y0, x1, y1) in frame pixels
     zoom: float = 1.0                    # crop upscale actually used
+    crop: Rect | None = None             # the crop the model was given, frame px
+    fill: float = 0.0                    # hand side / crop side (0 = not cropped)
+    focused: bool = False                # True when the detection used a crop
     fps: float = 0.0
     width: int = 0
     height: int = 0
@@ -83,12 +99,15 @@ class HandTracker:
     """cv2 camera + mediapipe Tasks HandLandmarker in VIDEO mode."""
 
     def __init__(self, camera=0, width=1280, height=720, model=DEFAULT_MODEL,
-                 zoom=True, target_side=512, max_upscale=4.0,
-                 min_detection=0.3, min_presence=0.3, min_tracking=0.3):
+                 zoom=True, target_side=512, max_upscale=6.0, fill=FILL,
+                 deadband=DEADBAND, min_detection=0.3, min_presence=0.3,
+                 min_tracking=0.3):
         model = ensure_model(model)
         self.target_side = target_side
         self.max_upscale = max_upscale
         self.zoom = zoom
+        self.fill = fill              # wanted hand side / crop side
+        self.deadband = deadband      # keep the crop while the hand is this central
 
         self.cap = cv2.VideoCapture(camera)
         if not self.cap.isOpened():
@@ -112,6 +131,10 @@ class HandTracker:
         self.landmarker = vision.HandLandmarker.create_from_options(options)
 
         self._box = None          # float box in frame px, smoothed
+        self._crop = None         # Rect of the focus crop that last worked
+        self._tiles = None        # acquire scan tiles, built once per frame size
+        self._tiles_for = None
+        self._tile_i = 0
         self._misses = 0          # consecutive frames without a hand
         self._last_scan = 0.0
         self._t0 = time.monotonic()
@@ -142,15 +165,6 @@ class HandTracker:
         ys = [p.y * frame_h for p in pts]
         box = (min(xs), min(ys), max(xs), max(ys))
         return pts, box
-
-    @staticmethod
-    def _expand(box, margin, frame_w, frame_h):
-        x0, y0, x1, y1 = box
-        bw, bh = max(x1 - x0, 16.0), max(y1 - y0, 16.0)
-        cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
-        hw, hh = bw * (0.5 + margin), bh * (0.5 + margin)
-        return (int(max(0, cx - hw)), int(max(0, cy - hh)),
-                int(min(frame_w, cx + hw)), int(min(frame_h, cy + hh)))
 
     def _resize_for_model(self, sub):
         """Up-scale a hand-sized crop (long range) and down-scale a full frame
@@ -183,19 +197,38 @@ class HandTracker:
         self._last_scan = t
 
         landmarks = box = None
-        zoom = 1.0
-        attempts = []
+        zoom, fill = 1.0, 0.0
+        focused, crop, used = False, None, None
+        attempts = []            # (rect, kind): "focus", "scan" or "full"
 
-        # 1) tracking: crop around the last known hand (the long-range win)
+        # 1) focus: crop around the last hand, sized so the hand fills ~55% of the
+        #    model input at ANY distance. This is the range win -- the crop is
+        #    planned from the hand, so the detector sees the same hand size at 1 m
+        #    and at 4 m instead of one that shrinks with distance.
         if self.zoom and self._box is not None:
-            attempts.append(self._expand(self._box, 0.35, frame_w, frame_h))
-        # 2) reacquire: full frame, downscaled so the model still sees a hand.
-        # Always the fallback, not just after a miss: when the hand leaves the
-        # smoothed box the crop misses, and waiting a frame to notice turned one
-        # stale box into a dropped frame -- the hand "teleporting" out of range.
-        attempts.append((0, 0, frame_w, frame_h))
+            attempts.append((plan_crop(Rect(*self._box), frame_w, frame_h,
+                                       fill=self.fill, deadband=self.deadband,
+                                       previous=self._crop), "focus"))
+        # 2) scan: while nothing is tracked, one tile per frame. A far hand is too
+        #    small to survive the downscale that a whole-frame scan applies, while
+        #    in a tile it is upscaled instead. Rotation keeps this to one extra
+        #    detection per frame, and it stops the moment a hand is found.
+        if self.zoom:
+            if self._tiles is None or self._tiles_for != (frame_w, frame_h):
+                self._tiles = scan_tiles(frame_w, frame_h)
+                self._tiles_for = (frame_w, frame_h)
+                self._tile_i = 0
+            if self._box is None and self._tiles:
+                attempts.append((self._tiles[self._tile_i % len(self._tiles)], "scan"))
+                self._tile_i += 1
+        # 3) last resort: the whole frame (downscaled), so a hand anywhere is still
+        #    found when every crop misses. Always present, not just after a miss:
+        #    when the hand leaves the box the focus crop misses, and waiting a frame
+        #    to notice turned one stale box into a dropped frame.
+        attempts.append((Rect(0, 0, frame_w, frame_h), "full"))
 
-        for (x0, y0, x1, y1) in attempts:
+        for rect, kind in attempts:
+            x0, y0, x1, y1 = rect.ints()
             if x1 - x0 < 24 or y1 - y0 < 24:
                 continue
             sub = frame[y0:y1, x0:x1]
@@ -207,11 +240,18 @@ class HandTracker:
                 continue
             landmarks, box = self._crop_for(found, x0, y0, x0 + w / k, y0 + h / k,
                                             frame_w, frame_h)
-            zoom = k
+            used = kind
+            focused = kind != "full"
+            crop = rect if focused else None
+            zoom = k if focused else 1.0
+            fill = hand_fill(Rect(*box), rect) if focused else 0.0
             break
 
         if landmarks is not None:
             self._misses = 0
+            # Only a focus crop is worth reusing next frame: a scan tile is just a
+            # place the hand happened to be found, not a crop built around it.
+            self._crop = crop if used == "focus" else None
             if self._box is None:
                 self._box = box
             else:                       # smooth the tracking box
@@ -219,11 +259,13 @@ class HandTracker:
                 self._box = tuple(a * n + (1 - a) * o for n, o in zip(box, self._box))
         else:
             self._misses += 1
+            self._crop = None           # re-plan from scratch when it comes back
             if self._misses > 6:
                 self._box = None
 
         return Frame(image=frame, landmarks=landmarks, box=box, zoom=zoom,
-                     fps=self._fps, width=frame_w, height=frame_h)
+                     fps=self._fps, width=frame_w, height=frame_h,
+                     crop=crop, fill=fill, focused=focused)
 
     def close(self):
         try:

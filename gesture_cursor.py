@@ -74,6 +74,15 @@ class Config:
     still_palm: float = 0.15     # hand travel that must back a cursor move (palm-lengths)
     post_click_lock: bool = True
 
+    # --- aiming reticle that grows with distance (HUD only) ----------------
+    # At 3-4 m a 6 px dot is invisible from the sofa, and up close a huge ring would
+    # just hide the thing being pointed at. The reticle is lerped between these two
+    # sizes by the camera distance, so it is small at 1 m and big at 4 m.
+    cursor_near_px: float = 14.0   # radius at cursor_near_cm or closer
+    cursor_far_px: float = 46.0    # radius at cursor_far_cm or further
+    cursor_near_cm: float = 80.0
+    cursor_far_cm: float = 320.0
+
     # --- state machine ---------------------------------------------------
     arm_hold: float = 0.55       # the open palm held this long arms control
     palm_upright: float = PALM_UPRIGHT  # how upright an arming palm has to be
@@ -323,6 +332,26 @@ def estimate_distance_cm(lm, frame_w, cfg: Config | None = None):
         return 0.0
     f_px = (frame_w / 2.0) / math.tan(math.radians(cfg.hfov_deg) / 2.0)
     return f_px * cfg.palm_cm / (s * frame_w)
+
+
+def cursor_radius_px(distance_cm, cfg: Config | None = None):
+    """Radius of the HUD aiming reticle, in frame pixels: small near the camera,
+    large far away, eased between `cursor_near_cm` and `cursor_far_cm` and clamped
+    outside that range so it never vanishes up close or swallows the screen.
+
+    HUD only, and pure maths: app.py draws the number this returns while the
+    pointing hand is live, so the guide you aim with stays visible from 3-4 m.
+    (The OS pointer itself belongs to the system and cannot be resized.)
+    """
+    cfg = cfg or Config()
+    lo, hi = cfg.cursor_near_cm, cfg.cursor_far_cm
+    if not distance_cm or distance_cm <= 0:
+        return cfg.cursor_near_px
+    if hi <= lo:
+        return cfg.cursor_far_px
+    t = min(max((distance_cm - lo) / (hi - lo), 0.0), 1.0)
+    t = t * t * (3.0 - 2.0 * t)          # ease in/out: no visible jump at either end
+    return cfg.cursor_near_px + t * (cfg.cursor_far_px - cfg.cursor_near_px)
 
 
 # ---------------------------------------------------------------- debouncer

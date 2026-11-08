@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
-                            SwipeDetector)
+                            SwipeDetector, cursor_radius_px)
 from voice import Voice
 
 WIN = "AirTrack"
@@ -84,9 +84,22 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
     if mirror:
         frame = cv2.flip(frame, 1)
 
-    def X(x_norm):                     # frame x -> displayed x
+    def X(x_norm):                     # normalized frame x -> displayed x
         x_px = int(x_norm * w)
         return w - 1 - x_px if mirror else x_px
+
+    # Frame PIXELS -> displayed pixels. tracker.py reports boxes and the focus crop
+    # in frame pixels, and the preview window can be a different size, so scale
+    # first: treating a pixel box as normalized drew it thousands of px off-screen.
+    sx = w / float(fr.width or w)
+    sy = h / float(getattr(fr, "height", 0) or h)
+
+    def XPx(px):
+        x_px = int(px * sx)
+        return w - 1 - x_px if mirror else x_px
+
+    def YPx(py):
+        return int(py * sy)
 
     pulse = 0.75 + 0.25 * np.sin(time.monotonic() * 5.0)
     if halo:   # fallback only: with the full-screen overlay the preview stays clean
@@ -94,10 +107,16 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
                       strength=1.0 if out.state is ControlState.ACTIVE else 0.45 * pulse)
 
     if fr.box:
-        xa, xb = X(fr.box[0]), X(fr.box[2])
-        y0, y1 = int(fr.box[1]), int(fr.box[3])
-        cv2.rectangle(frame, (min(xa, xb), y0), (max(xa, xb), y1),
+        xa, xb = XPx(fr.box[0]), XPx(fr.box[2])
+        cv2.rectangle(frame, (min(xa, xb), YPx(fr.box[1])), (max(xa, xb), YPx(fr.box[3])),
                       COLORS[out.state], 1, cv2.LINE_AA)
+
+    # What the model actually sees: the auto-zoom crop that follows the hand.
+    crop = getattr(fr, "crop", None)
+    if crop is not None and getattr(fr, "focused", False):
+        xa, xb = XPx(crop.x0), XPx(crop.x1)
+        cv2.rectangle(frame, (min(xa, xb), YPx(crop.y0)), (max(xa, xb), YPx(crop.y1)),
+                      (230, 200, 60), 1, cv2.LINE_AA)
 
     if fr.landmarks:
         for p in fr.landmarks:
@@ -105,8 +124,24 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
                        (255, 255, 255), -1, cv2.LINE_AA)
         tip = fr.landmarks[8]
         cx, cy = X(tip.x), int(tip.y * h)
-        _arc(frame, (cx, cy), 30, out.progress, COLORS[out.state], 3)
-        cv2.circle(frame, (cx, cy), 6, COLORS[out.state], -1, cv2.LINE_AA)
+        r_px = extra.get("cursor_px") or 0
+        if r_px:
+            # Aiming reticle: the radius comes from gesture_cursor.cursor_radius_px,
+            # so the guide grows with the camera distance and stays visible from
+            # across the room. Only drawn while the pointing hand is live.
+            r = int(min(max(r_px, 8.0), h * 0.22))
+            cv2.circle(frame, (cx, cy), r, COLORS[out.state], 2, cv2.LINE_AA)
+            for ang in (0, 90, 180, 270):
+                a = math.radians(ang)
+                cv2.line(frame,
+                         (int(cx + (r - 4) * math.cos(a)), int(cy + (r - 4) * math.sin(a))),
+                         (int(cx + (r + 8) * math.cos(a)), int(cy + (r + 8) * math.sin(a))),
+                         COLORS[out.state], 2, cv2.LINE_AA)
+            cv2.circle(frame, (cx, cy), 3, (255, 255, 255), -1, cv2.LINE_AA)
+            _arc(frame, (cx, cy), r + 10, out.progress, COLORS[out.state], 3)
+        else:
+            _arc(frame, (cx, cy), 30, out.progress, COLORS[out.state], 3)
+            cv2.circle(frame, (cx, cy), 6, COLORS[out.state], -1, cv2.LINE_AA)
         # Screen-switch hold: a second ring on the thumb tip, so a hold that is
         # half done is visible from across the room.
         swipe_progress = float(extra.get("swipe", 0.0))
@@ -123,7 +158,8 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
     info = [f"pose: {out.pose or '-'}",
             f"hand: {out.distance_cm / 30.48:.1f} ft / {out.distance_cm:.0f} cm"
             if out.distance_cm else "hand: -",
-            f"zoom: {fr.zoom:.1f}x",
+            (f"zoom: {fr.zoom:.1f}x  hand {fr.fill * 100:.0f}% of crop"
+             if fr.focused else "zoom: - (whole frame)"),
             f"{fr.fps:.0f} fps",
             "switch: thumb left/right, hold 0.75 s",
             f"scroll: {extra.get('scroll', '-')}",
@@ -150,7 +186,8 @@ def main(argv=None):
     ap.add_argument("--min-speed", type=float, default=Config.min_speed,
                     help="hand speed in palm-lengths/s needed to move the cursor "
                          "(bigger = steadier, smaller = more sensitive)")
-    ap.add_argument("--no-zoom", action="store_true", help="disable ROI upscaling")
+    ap.add_argument("--no-zoom", action="store_true",
+                    help="disable the auto-zoom crop (whole-frame detection only)")
     ap.add_argument("--dry-run", action="store_true",
                     help="never move the real cursor (safe testing)")
     ap.add_argument("--no-preview", action="store_true")
@@ -220,6 +257,9 @@ def main(argv=None):
     print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
     print("Switch space: thumb straight left/right, other fingers curled, hold "
           "0.75 s (ACTIVE only).")
+    print("Auto-zoom: on -- the crop follows the hand, like a camera focusing on it,"
+          " so the hand fills the model's input at any distance."
+          if tracker.zoom else "Auto-zoom: off (--no-zoom), whole-frame detection only.")
     if args.dry_run:
         print("DRY RUN: the cursor will not move.")
 
@@ -238,6 +278,7 @@ def main(argv=None):
     swipe_det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
     scroll_dir = None
+    reticle = None                 # smoothed aiming-reticle radius
     
     try:
         while True:
@@ -297,6 +338,18 @@ def main(argv=None):
                 print(f"[{time.monotonic() - t_start:6.1f}s] click at "
                       f"({out.x:.0f}, {out.y:.0f})")
 
+            # Aiming reticle: only while the pointing hand is live, and sized by the
+            # camera distance so it stays visible at 3-4 m without hiding anything
+            # up close. Smoothed, because the distance readout itself jitters.
+            cursor_px = None
+            if (out.state is ControlState.ACTIVE and out.pose == "point"
+                    and out.distance_cm):
+                want = cursor_radius_px(out.distance_cm, cfg)
+                reticle = want if reticle is None else 0.85 * reticle + 0.15 * want
+                cursor_px = reticle
+            else:
+                reticle = None
+
             if not args.dry_run and pyautogui is not None:
                 try:
                     if out.action in ("move", "click"):
@@ -318,6 +371,7 @@ def main(argv=None):
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
                     "swipe": swipe_det.progress(current_time),
                     "scroll": scroll_det.direction or "-",
+                    "cursor_px": cursor_px,
                     "click": "hold still", "dry": args.dry_run},
                     mirror=cfg.mirror, halo=halo_in_preview)
                 cv2.imshow(WIN, frame)
