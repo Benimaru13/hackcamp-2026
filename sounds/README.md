@@ -12,7 +12,7 @@ The key and voice id are read from `.env` (`ELEVENLABS_API_KEY`,
 
 | clip | when it plays |
 | --- | --- |
-| `activated.wav` | a thumbs up takes control (`ARMED` → `ACTIVE`) |
+| `activated.wav` | an open palm takes control (`ARMED` → `ACTIVE`) |
 | `released.wav` | control is released (`ACTIVE` → `ARMED`) |
 
 Missing files are simply silent, so the app runs fine without them. Commit the

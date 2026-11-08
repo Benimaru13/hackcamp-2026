@@ -1,6 +1,6 @@
 """AirTrack demo entry point.
 
-    python app.py                 # run it, give a thumbs up to take control
+    python app.py                 # run it, raise an open palm to take control
     python app.py --dry-run       # detect + show the HUD, never touch the cursor
 
 The window shows the camera (mirrored, so it reads like a mirror), the current
@@ -20,7 +20,7 @@ import time
 import cv2
 import numpy as np
 
-from gesture_cursor import (Config, ControlState, CursorController,
+from gesture_cursor import (Config, ControlState, CursorController, SwipeDetector,
                             two_finger_direction)
 from voice import Voice
 
@@ -208,8 +208,8 @@ def main(argv=None):
     halo_in_preview = glow is None or not glow.available
 
     print(f"AirTrack running ({tracker.width}x{tracker.height}).")
-    print("ARMED: give a thumbs up (four fingers curled, thumb out) for half a "
-          "second to take control.")
+    print("ARMED: raise an open palm toward the camera for half a second to "
+          "take control.")
     print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
     if args.dry_run:
         print("DRY RUN: the cursor will not move.")
@@ -226,7 +226,7 @@ def main(argv=None):
     frames = detections = clicks = 0
     state = None
     t_start = time.monotonic()
-    last_swipe_time = 0.0
+    swipe_det = SwipeDetector(cfg.swipe_travel, cfg.swipe_window, cfg.swipe_cooldown)
     scroll_dir = None
     last_scroll_time = 0.0
     
@@ -268,17 +268,15 @@ def main(argv=None):
                     print(f"[{current_time - t_start:6.1f}s] ✌️ scroll stopped")
                 scroll_dir = None
 
-            # Two-finger horizontal: the previous/next-space swipe (any state).
-            if direction in ("left", "right") and current_time - last_swipe_time > 1.5:
-                if direction == "right":
-                    print(f"[{current_time - t_start:6.1f}s] ✌️ 👈 2-FINGER SWIPE RIGHT")
-                    if pyautogui is not None and not args.dry_run:
-                        pyautogui.hotkey("ctrl", "right")
-                else:
-                    print(f"[{current_time - t_start:6.1f}s] ✌️ 👉 2-FINGER SWIPE LEFT")
-                    if pyautogui is not None and not args.dry_run:
-                        pyautogui.hotkey("ctrl", "left")
-                last_swipe_time = current_time
+            # Two-finger horizontal: previous/next space. ACTIVE only -- it used
+            # to fire in every state, which changed screens with nothing armed and
+            # no way to tell it had happened. And it is a SWIPE now: SwipeDetector
+            # wants real sideways travel, not a tilted V.
+            swipe = swipe_det.update(fr.landmarks, current_time)
+            if swipe and out.state is ControlState.ACTIVE:
+                print(f"[{current_time - t_start:6.1f}s] ✌️ 2-FINGER SWIPE {swipe.upper()}")
+                if pyautogui is not None and not args.dry_run:
+                    pyautogui.hotkey("ctrl", swipe)
             if out.state is not state:
                 was_active = state is ControlState.ACTIVE
                 state = out.state

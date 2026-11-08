@@ -2,8 +2,8 @@
 gesture_cursor.py  --  AirTrack core logic (no camera, no OS calls)
 
 Pipeline:  MediaPipe landmarks
-        -> pose classification (thumbs up / point / palm / fist / pinch)
-        -> state machine   ARMED --(thumbs up held)--> ACTIVE --(fist held)--> ARMED
+        -> pose classification (palm / point / fist / pinch)
+        -> state machine   ARMED --(open palm held)--> ACTIVE --(fist held)--> ARMED
         -> hand position converted to palm-lengths (identical at every distance)
         -> One Euro smoothing + deadzone in that space (shake tolerance)
         -> relative cursor movement + dwell click (pointing hand held still)
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 PINCH_RATIO = 0.38        # thumb-index gap / palm length below which it is a pinch
-THUMB_EXT = 0.22          # thumb reach past the index knuckle that arms (palm-lengths)
+PALM_UPRIGHT = 0.35       # cos(tilt): knuckles this far above the wrist count as upright
 
 
 # ---------------------------------------------------------------- config
@@ -74,13 +74,18 @@ class Config:
     post_click_lock: bool = True
 
     # --- state machine ---------------------------------------------------
-    thumb_extension: float = THUMB_EXT  # thumb reach past the index knuckle that arms
-    arm_hold: float = 0.55              # the thumbs up held this long arms control
+    arm_hold: float = 0.55       # the open palm held this long arms control
+    palm_upright: float = PALM_UPRIGHT  # how upright an arming palm has to be
     stop_hold: float = 0.35      # fist held this long releases control
     arm_cooldown: float = 0.60   # ignore the arm gesture right after a release
     lost_timeout: float = 2.0    # hand gone this long while ACTIVE => release control
     enter_frames: int = 3        # debounce: fast to accept a pose
     exit_frames: int = 4         # slow to drop it (handles 1-2 dropped frames)
+
+    # --- two-finger swipe -------------------------------------------------
+    swipe_travel: float = 0.55   # sideways travel (palm-lengths) that fires a swipe
+    swipe_window: float = 1.2    # ...within this long
+    swipe_cooldown: float = 1.2  # then stay quiet this long
 
     # --- misc ------------------------------------------------------------
     palm_cm: float = 9.0         # assumed palm length, only for the distance readout
@@ -208,54 +213,37 @@ def pinch_gap(lm):
 
 
 def is_open_palm(lm):
-    """All four fingers extended and the thumb held away from the index finger.
-    Only a HUD label now: arming needs the thumbs up below."""
+    """All four fingers extended and the thumb held away from the index finger:
+    the gesture that takes control.
+
+    Four extended fingers is the one thing the detector still gets right at 10 ft
+    in bad light -- thumb geometry (the "O" ring, then the thumbs up) turned to
+    mush past about 2 m and read as a fist. The demo values a gesture that always
+    works over one that can never happen by accident.
+    """
     if not all(fingers_up(lm)):
         return False
     return pinch_gap(lm) > 0.55
 
 
-def thumb_extension(lm):
-    """How far the thumb tip reaches along the palm's own axis, measured from the
-    index knuckle, in palm-lengths.
-
-    Projecting onto wrist -> middle knuckle makes this rotation independent (roll
-    your hand and a thumbs up still reads the same) and splits the two poses a
-    fist can be confused with by distance: a fist keeps its thumb on the knuckles
-    (~0.1), a thumbs up pushes it out past them (~0.4).
+def palm_upright(lm, k=PALM_UPRIGHT):
+    """cos(tilt) of the palm, from wrist to middle knuckle: ~1.0 for a hand raised
+    to the camera, ~0 for a hand resting flat on the desk with the fingers pointing
+    away. Generous on purpose (0.35 is about 70 degrees of tilt) -- it only has to
+    stop the palm that is lying around in ordinary desk posture, not grade a wave.
     """
     s = max(hand_scale(lm), 1e-6)
-    ax = (lm[MIDDLE_MCP].x - lm[WRIST].x) / s
-    ay = (lm[MIDDLE_MCP].y - lm[WRIST].y) / s
-    n = math.hypot(ax, ay) or 1e-6
-    vx = (lm[THUMB_TIP].x - lm[INDEX_MCP].x) / s
-    vy = (lm[THUMB_TIP].y - lm[INDEX_MCP].y) / s
-    return (vx * ax + vy * ay) / n
+    return (lm[WRIST].y - lm[MIDDLE_MCP].y) / s >= k
 
 
-def is_thumbs_up(lm, extension=THUMB_EXT):
-    """Four fingers curled into a fist with the thumb held out along the palm:
-    the gesture that takes control.
+def is_arm_pose(lm):
+    """The arming gesture: an open palm, raised toward the camera.
 
-    Two conditions, chosen to sit between the two failure modes: too common (the
-    open palm armed by accident in ordinary desk posture) and too strict (the "O"
-    ring collapsed into a fist at 3 m, where the thumb-to-fingertip gap is only a
-    few pixels).
-
-      * every finger curled, so an open palm, a point, a pinch and the two-finger
-        V can never take control;
-      * the thumb reaches at least 0.22 palm-lengths past the index knuckle along
-        the palm axis. A fist keeps its thumb on the knuckles (~0.1), so the stop
-        gesture can never arm; a thumb held out sideways projects ~0, so it does
-        not arm either. A real thumbs up measures ~0.4-0.7, which leaves room for
-        a tilted hand at 3 m without letting an ambiguous hand through.
-
-    Everything is divided by palm length, so the same hand reads the same at 1 m
-    and at 3 m.
+    The open palm alone was too easy to hit by accident, so it is paired with the
+    cheapest, most reliable discriminator there is: is the hand holding itself up?
+    No thumb geometry, nothing that collapses at distance.
     """
-    if any(fingers_up(lm)):
-        return False
-    return thumb_extension(lm) >= extension
+    return is_open_palm(lm) and palm_upright(lm)
 
 
 def is_fist(lm):
@@ -268,17 +256,15 @@ def is_fist(lm):
     return all(_d(lm[tip], lm[WRIST]) < 1.45 * s for tip, _ in _FINGERS)
 
 
-def classify_pose(lm, thumb_ext=THUMB_EXT):
-    """Single label for the HUD. Precedence: the arming thumbs up beats fist
-    (stop) beats pinch (click) beats palm beats point (move).
+def classify_pose(lm):
+    """Single label for the HUD. Precedence: fist (stop) beats pinch beats palm
+    (arm) beats point (move).
 
-    The thumbs up is tested before the fist because both are four curled fingers;
-    what separates them is how far the thumb reaches past the knuckles (see
-    is_thumbs_up)."""
+    The palm is reported whenever the hand is open; whether it is upright enough
+    to actually arm is checked separately (is_arm_pose), the same way the fist is
+    only the stop gesture while ACTIVE."""
     if lm is None:
         return ""
-    if is_thumbs_up(lm, thumb_ext):
-        return "thumbs_up"
     if is_fist(lm):
         return "fist"
     if pinch_gap(lm) < PINCH_RATIO:
@@ -331,7 +317,7 @@ class Gate:
             self._n_off += 1
             # A hold gesture survives a couple of dropped frames: at 3 m the
             # landmarks flicker, and restarting the hold on every blink would
-            # make the ring impossible to complete.
+            # make the hold impossible to complete.
             if self._n_off >= self.exit_frames:
                 self._n_on = 0
                 self.on = False
@@ -342,6 +328,49 @@ class Gate:
         if not self.on and self._n_on >= max(self.enter_frames, 1) and hold > 0:
             return min(max((now - self._t0) / hold, 0.0), 1.0)
         return 0.0
+
+
+class SwipeDetector:
+    """Horizontal two-finger swipe, detected as TRAVEL, not as a finger angle.
+
+    The old test looked at which way the V leaned, so simply tilting the fingers
+    fired a space switch without the hand moving at all -- which is why it felt
+    random, failed when people did swipe, and fired while the controller was off.
+    This needs the hand itself to cross `travel` palm-lengths sideways within
+    `window` seconds while the V is held, then it stays quiet for `cooldown`.
+    """
+
+    def __init__(self, travel=0.55, window=1.2, cooldown=1.2):
+        self.travel, self.window, self.cooldown = travel, window, cooldown
+        self._x = None
+        self._t = 0.0
+        self._ready_at = -1e9
+
+    def reset(self):
+        self._x = None
+
+    def update(self, lm, now):
+        """"left" / "right" on the frame the swipe completes, else None."""
+        if lm is None or now < self._ready_at:
+            self.reset()
+            return None
+        idx, mid, ring, pink = fingers_up(lm)
+        if not (idx and mid) or ring or pink:
+            self.reset()
+            return None
+        s = max(hand_scale(lm), 1e-6)
+        x = (lm[INDEX_TIP].x + lm[MIDDLE_TIP].x) / 2.0
+        # A slow drift restarts the window, so only a deliberate swipe accumulates
+        # enough travel to fire.
+        if self._x is None or now - self._t > self.window:
+            self._x, self._t = x, now
+            return None
+        dx = (x - self._x) / s          # image x: the user's right is -x
+        if abs(dx) < self.travel:
+            return None
+        self._x = None
+        self._ready_at = now + self.cooldown
+        return "right" if dx < 0 else "left"
 
 
 # ---------------------------------------------------------------- output
@@ -392,7 +421,7 @@ class CursorController:
 
     def _reset_gates(self):
         c = self.cfg
-        self._g_thumb = Gate(c.enter_frames, c.exit_frames)
+        self._g_palm = Gate(c.enter_frames, c.exit_frames)
         self._g_fist = Gate(c.enter_frames, c.exit_frames)
         self._g_point = Gate(c.enter_frames, c.exit_frames)
 
@@ -531,7 +560,7 @@ class CursorController:
     def update(self, lm, now=None) -> Output:
         now = time.monotonic() if now is None else now
         c = self.cfg
-        pose = classify_pose(lm, c.thumb_extension)
+        pose = classify_pose(lm)
         has_hand = lm is not None and hand_scale(lm) > 1e-6
         dist = estimate_distance_cm(lm, c.frame_w, c) if has_hand else 0.0
 
@@ -541,21 +570,23 @@ class CursorController:
         # every gate advances every frame, whatever the state
         if has_hand:
             self._last_seen = now
-        self._g_thumb.update(now, pose == "thumbs_up", c.arm_hold)
+        self._g_palm.update(now, pose == "palm" and palm_upright(lm, c.palm_upright),
+                            c.arm_hold)
         self._g_fist.update(now, pose == "fist", c.stop_hold)
         self._g_point.update(now, pose == "point")
 
         # ------------------------------------------------ ARMED
         if self.state is ControlState.ARMED:
-            if self._g_thumb.rose and now >= self._arm_ready_at:
+            if self._g_palm.rose and now >= self._arm_ready_at:
                 self._enter_active(now)
                 return Output(self.state, *self.pos, action="armed", pose=pose,
                               distance_cm=dist, hint="control taken")
             prog = 0.0
-            hint = "give a thumbs up to take control"
-            if pose == "thumbs_up" and now >= self._arm_ready_at:
-                prog = self._g_thumb.hold_fraction(now, c.arm_hold)
-                hint = "keep holding the thumbs up..."
+            hint = "raise an open palm to take control"
+            if (pose == "palm" and palm_upright(lm, c.palm_upright)
+                    and now >= self._arm_ready_at):
+                prog = self._g_palm.hold_fraction(now, c.arm_hold)
+                hint = "keep holding the palm up..."
             return Output(self.state, *self.pos, progress=prog, pose=pose,
                           distance_cm=dist, hint=hint)
 
@@ -573,7 +604,7 @@ class CursorController:
         progress = 0.0
         if has_hand:
             if self._g_point.rose:
-                # Unfolding the "O" into a point moves the fingertip half a palm in
+                # Unfolding the palm into a point moves the fingertip half a palm in
                 # one frame; re-seed the smoothing so it cannot jump the cursor.
                 self._reset_tracking()
             if self._move_relative(lm, now, apply=self._g_point.on):

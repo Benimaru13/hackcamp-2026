@@ -7,7 +7,7 @@ Built for the hands-occupied case — you are washing dishes, your hands are wet
 or you are just not within reach of the keyboard.
 
 ```
-python app.py                # run it; give a thumbs up to take control
+python app.py                # run it; raise an open palm to take control
 ```
 
 ---
@@ -21,11 +21,11 @@ python app.py                # run it; give a thumbs up to take control
 | Cursor movement, distance independent | working, unit tested, measured |
 | Shake / jitter rejection | working, unit tested, measured |
 | Click | only with the pointing hand: hold it still ~2 s, unit tested |
-| Arming / releasing control | working: thumbs up to arm, fist to release |
+| Arming / releasing control | working: raised open palm to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical swipe | scrolls up/down, one wheel step per 0.15 s, ACTIVE only |
-| Two-finger sideways swipe | sends ctrl+← / ctrl+→; currently fires in every state (see Known issues) |
+| Two-finger sideways swipe | sends ctrl+← / ctrl+→, ACTIVE only, needs real sideways travel |
 | Volume / media keys | not in the MVP |
 
 ---
@@ -34,12 +34,12 @@ python app.py                # run it; give a thumbs up to take control
 
 | Pose | Where | What happens |
 | --- | --- | --- |
-| 👍 Thumbs up: four fingers curled, thumb out past the knuckles, held ~0.5 s | ARMED | takes control (becomes ACTIVE) |
+| 🖐 Open palm, raised: four fingers up, thumb out, hand held up ~0.5 s | ARMED | takes control (becomes ACTIVE) |
 | ☝️ Index finger only | ACTIVE | moves the cursor |
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
 | ✌️ Two fingers, pointing up/down | ACTIVE | scrolls (one wheel step every 0.15 s) |
-| ✌️ Two fingers, sideways | any state | sends ctrl+← / ctrl+→ (see Known issues) |
+| ✌️ Two fingers, moved sideways | ACTIVE | sends ctrl+← / ctrl+→ (a real swipe, ~5 cm of travel) |
 | — Esc / `q` / Ctrl-C | any time | quits, control released |
 
 Hovering is the only click, and it needs no extra pose: aim, stop moving, and after
@@ -49,38 +49,38 @@ click, and a couple of pixels of sensor noise are not a move. It runs only while
 a fist, palm or pinch cancels the countdown instead of clicking on the way out of a
 gesture.
 
-**Why a thumbs up?** The arming gesture has failed in both directions, and the fix
-is to sit between them. The **open palm** was too *common*: it turns up in ordinary
-desk posture and armed the app by accident. The **"O" ring** was too *strict*: at
-3 m the thumb-to-fingertip gap is a few pixels, so it read as a fist and often did
-not arm at all. A thumbs up is rare in normal computer use (fingers curl, so you
-are not typing), and it separates itself from the stop fist with the one thing a
-fist cannot fake: the thumb.
+**Why the open palm, after trying everything else?** The arming gesture has failed
+in three ways, and this is the compromise that actually works on a demo table.
+The **open palm** was too *common*: it turns up in ordinary desk posture and armed
+the app by accident. The **"O" ring** and then the **thumbs up** were too
+*strict*: both are thumb-versus-finger geometry, and at 3 m in a dim room the thumb
+is a handful of pixels. They read as a fist, armed with one hand but not the other,
+and turned the whole thing into a coin flip. The demo values a gesture that always
+works over one that can never happen by accident, so the palm is back -- with one
+cheap guard that costs nothing at distance.
 
-`is_thumbs_up()` asks for two things:
+`is_arm_pose()` asks for two things:
 
-1. **every** finger curled -- so an open palm, the pointing hand, a pinch and the
-   two-finger V can never take control (`test_open_palm_does_not_arm`,
+1. an **open palm**: all four fingers extended, thumb held away from the index
+   finger -- so the pointing hand, a pinch, a fist and the two-finger V can never
+   take control (`test_palm_and_pinch_never_overlap`, `test_point_does_not_arm`,
    `test_fist_does_not_arm`);
-2. the thumb reaching at least `THUMB_EXT` (0.22 palm-lengths) past the index
-   knuckle, measured along the palm's own axis -- a fist keeps its thumb on the
-   knuckles (~0.1), and a thumb held out sideways projects ~0
-   (`test_thumbs_up_and_fist_never_overlap`, `test_sideways_thumb_does_not_arm`).
+2. the hand **held up** (`palm_upright()`): the middle knuckle at least 0.35
+   palm-lengths above the wrist. A palm raised to the camera is ~1.0; a hand
+   resting flat on the desk, fingers pointing away, is ~0 and can never arm
+   (`test_flat_palm_does_not_arm`).
 
-Projecting onto the palm axis instead of the screen's makes it rotation
-independent: tilt or roll the hand and the gesture still reads the same. A real
-thumbs up measures ~0.4-0.7, so the threshold sits in the *middle* of the gap
-between the two poses rather than at either edge -- loose enough to arm at 10 ft,
-tight enough that a fist or a sideways thumb never does. Because a thumbs up is
-also four curled fingers it is classified before the fist, and taking control
-suppresses clicks for one cooldown, so the pose that armed the app never clicks on
-the frame it succeeds (`test_arming_thumbs_up_never_clicks`). The click is still a
-*still pointing hand*, so no other pose can fire one.
+Nothing here measures the thumb against anything, which is the part that collapsed
+at 10 ft, and nothing depends on handedness -- left and right read identically, so
+both thumbs are gone from the pipeline entirely. Taking control suppresses clicks
+for one cooldown, so the frame that arms never also clicks
+(`test_arming_palm_never_clicks`). The click is still a *still pointing hand*, so
+no other pose can fire one.
 
 ### Interaction states
 
 ```
-            thumbs up held 0.5 s                fist held 0.35 s
+            palm held up 0.5 s                  fist held 0.35 s
    OFF  ---------------------->  ARMED  <------------------------->  ACTIVE
   (camera       (amber halo,    (cursor        (green halo,
    released)     "watching")      untouched)     gestures control the cursor)
@@ -149,7 +149,7 @@ Use `--dry-run` for the first setup pass: stand at 10 ft, watch the halo and the
 ## Spoken cues (ElevenLabs)
 
 The app can announce what it is doing, which matters when you are across the room
-and not looking at the halo: `sounds/activated.wav` plays when a thumbs up
+and not looking at the halo: `sounds/activated.wav` plays when an open palm
 takes control, `sounds/released.wav` when control is released.
 
 The audio is generated once and played from disk, so the demo itself needs no API
@@ -202,7 +202,11 @@ Three separate problems, solved separately:
 2. **Distance changes sensitivity.** Every position and threshold is converted to
    **palm-lengths** (wrist → middle knuckle, ~9 cm). The same 15 cm hand sweep
    therefore moves the cursor the same number of pixels at 1 m and at 3 m.
-3. **A shaking hand must not move the cursor or click.** The fingertip is
+3. **Bad light must not look like a missing hand.** In a dim room `tracker.py`
+   brightens the crop it feeds the model (a gamma curve aimed at mid-grey, preview
+   untouched), and the tracked box always falls back to a full-frame scan, so a
+   hand that leaves the box is not dropped for a frame.
+4. **A shaking hand must not move the cursor or click.** The fingertip is
    smoothed (One Euro filter), its displacement converted to palm-lengths, then
    gated on **hand speed**, not on frame-to-frame jump size: a shaking hand has
    near-zero *average* speed, so it never crosses the threshold, while a
@@ -238,21 +242,22 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 46 tests, no camera needed
+python -m unittest discover -s tests -v   # 51 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
-two-finger direction at 1 m and 3 m (and that no other pose triggers it),
-a thumbs up never reading as a fist and vice versa, an open palm, a fist and a
-sideways thumb never arming, the arming frame never clicking, arming only after
-the hold time, the arm
+two-finger direction at 1 m and 3 m (and that no other pose triggers it), the
+raised palm arming and a flat palm never doing so, a point and a fist never arming,
+the arming frame never clicking, arming only after the hold time, the arm
 cooldown after a release, the lost-hand safety release, the same sweep moving the
 cursor the same distance near and far, no cursor drift from a shaky still hand, a
 2 s point hover clicking once where it settled, staying put never clicking twice,
 palm/fist/pinch never clicking, and dropping the pointing pose cancelling a
-half-finished dwell.
+half-finished dwell. The swipe is tested on its own: a held V never fires, a real
+sideways sweep fires exactly once in each direction, slow drift never accumulates
+into one, an open palm cannot fire it, and the cooldown swallows a repeat.
 
 What is **not** verified yet: an actual person at 10 ft with a real webcam. The
 tracking pipeline runs on this machine (camera + model + frames), but the
@@ -264,9 +269,12 @@ and record what you see.
 
 ## Known issues
 
-- **The horizontal two-finger swipe ignores the state machine.** It runs whenever a
-  hand is visible, so `ctrl+←` / `ctrl+→` can fire while the app is ARMED or OFF. It
-  needs the same ACTIVE gate the vertical scroll already has.
+- **The swipe wants a real hand movement** (~0.55 palm-lengths, about 5 cm, inside
+  1.2 s). A quick flick with the wrist alone may not register; a deliberate sweep
+  does. `Config.swipe_travel` is the knob: lower it for a lighter trigger.
+- **Dim rooms still cost accuracy.** `tracker.py` brightens the frame handed to the
+  model and always retries a full-frame scan, but a detector is still a detector:
+  face a lamp, not a window, during the demo.
 - **App switching is not the same on macOS and Windows.** `ctrl+←` / `→` switches
   Spaces on macOS and jumps a word on Windows; switching *apps* is ⌘-Tab on macOS and
   Alt-Tab on Windows, which the swipe does not send yet.

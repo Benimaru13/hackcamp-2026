@@ -38,23 +38,13 @@ _EXTENDED = {
     "pinch": {"index"},
     "fist": set(),
     "relaxed": set(),
-    "thumbs_up": set(),                           # fingers curled, thumb out
-    "thumb_side": set(),                          # fingers curled, thumb sideways
 }
 
 _THUMB_OPEN = [(0.30, 0.02), (0.62, -0.22), (0.86, -0.46), (1.06, -0.68)]
 # A fist wraps the thumb across the front of the curled fingers, so its tip ends
 # up between the index and middle knuckles -- close enough to the folded index tip
-# to measure like a pinch. Only the knuckle distance keeps it out of the ring.
+# to measure like a pinch, which is why is_fist checks the tips as well.
 _THUMB_TUCK = [(0.30, 0.02), (0.50, -0.35), (0.10, -0.80), (-0.18, -1.02)]
-
-# Thumbs up: the fingers stay in the fist's curled positions and only the thumb
-# leaves the knuckles, so the pose differs from a fist by exactly the thing the
-# classifier measures. thumb_side is the negative case: same curled fingers with
-# the thumb held out sideways, which must not arm.
-_THUMB_UP = [(0.30, 0.02), (0.22, -0.40), (0.10, -0.85), (0.02, -1.35)]
-_THUMB_SIDE = [(0.30, 0.02), (0.60, -0.10), (0.90, -0.12), (1.15, -0.14)]
-_THUMBS = {"thumbs_up": _THUMB_UP, "thumb_side": _THUMB_SIDE}
 
 
 def hand_template_finger_tip(name="index"):
@@ -69,10 +59,7 @@ def hand_template(pose="point"):
     ext = _EXTENDED.get(pose, _EXTENDED["point"])
     pts = [(0.0, 0.0)]                      # 0 wrist
 
-    if pose in _THUMBS:
-        thumb = list(_THUMBS[pose])
-    else:
-        thumb = list(_THUMB_OPEN if pose != "fist" else _THUMB_TUCK)
+    thumb = list(_THUMB_OPEN if pose != "fist" else _THUMB_TUCK)
     if pose == "pinch":
         # thumb tip meets the extended index tip, as in a real pinch
         index_tip = hand_template_finger_tip("index")

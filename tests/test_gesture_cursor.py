@@ -13,8 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fake_hand import FakeHand, palm_for_distance          # noqa: E402
 from gesture_cursor import (                               # noqa: E402
-    Config, ControlState, CursorController, classify_pose, is_fist, is_open_palm,
-    is_pointing, is_thumbs_up, pinch_gap, two_finger_direction)
+    Config, ControlState, CursorController, SwipeDetector, classify_pose,
+    is_arm_pose, is_fist, is_open_palm, is_pointing, pinch_gap,
+    two_finger_direction)
 
 DT = 1.0 / 30.0
 
@@ -42,8 +43,8 @@ class Rig:
         return self.out
 
     def arm(self):
-        self.run("thumbs_up", 0.9)
-        assert self.ctrl.state is ControlState.ACTIVE, "a thumbs up should arm"
+        self.run("palm", 0.9)
+        assert self.ctrl.state is ControlState.ACTIVE, "a raised palm should arm"
 
 
 class PoseTests(unittest.TestCase):
@@ -54,14 +55,10 @@ class PoseTests(unittest.TestCase):
             self.assertEqual(classify_pose(hand.landmarks("palm")), "palm", d)
             self.assertEqual(classify_pose(hand.landmarks("fist")), "fist", d)
             self.assertEqual(classify_pose(hand.landmarks("pinch")), "pinch", d)
-            self.assertEqual(classify_pose(hand.landmarks("thumbs_up")),
-                             "thumbs_up", d)
-            self.assertNotEqual(classify_pose(hand.landmarks("thumb_side")),
-                                "thumbs_up", d)
 
     def test_predicates_are_scale_invariant(self):
         for name, pred in (("point", is_pointing), ("palm", is_open_palm),
-                           ("fist", is_fist), ("thumbs_up", is_thumbs_up)):
+                           ("fist", is_fist)):
             near = FakeHand(pose=name).at_distance(1.0).landmarks()
             far = FakeHand(pose=name).at_distance(3.0).landmarks()
             self.assertTrue(pred(near), name)
@@ -76,18 +73,15 @@ class PoseTests(unittest.TestCase):
             self.assertFalse(is_fist(pinch))
             self.assertLess(pinch_gap(pinch), 0.38)
 
-    def test_thumbs_up_and_fist_never_overlap(self):
-        """A thumbs up is a fist with the thumb lifted off the knuckles. If the two
-        ever read the same way, the stop gesture could take control."""
+    def test_arm_pose_is_an_open_palm_held_up(self):
+        """The arming pose has to survive at distance and still refuse the palm that
+        is just lying around: an open hand, but only while it is raised."""
         for d in (1.0, 3.0):
-            thumb = FakeHand(pose="thumbs_up").at_distance(d).landmarks()
-            fist = FakeHand(pose="fist").at_distance(d).landmarks()
-            self.assertTrue(is_thumbs_up(thumb),
-                            f"thumbs up not recognised at {d} m")
-            self.assertFalse(is_thumbs_up(fist),
-                             f"fist read as a thumbs up at {d} m")
-            self.assertEqual(classify_pose(thumb), "thumbs_up", d)
-            self.assertEqual(classify_pose(fist), "fist", d)
+            up = FakeHand(pose="palm").at_distance(d).landmarks()
+            flat = FakeHand(pose="palm", angle=math.pi / 2).at_distance(d).landmarks()
+            self.assertTrue(is_arm_pose(up), f"raised palm not armed at {d} m")
+            self.assertTrue(is_open_palm(flat), "a sideways palm is still a palm")
+            self.assertFalse(is_arm_pose(flat), f"flat palm armed at {d} m")
 
     def test_rotated_hand_still_recognised(self):
         for angle in (-0.5, 0.0, 0.5):
@@ -117,44 +111,42 @@ class StateMachineTests(unittest.TestCase):
             self.assertEqual(out.state, ControlState.ARMED)
         self.assertEqual(rig.ctrl.pos, (rig.cfg.screen_w / 2, rig.cfg.screen_h / 2))
 
-    def test_thumbs_up_hold_arms_after_hold_time(self):
+    def test_palm_hold_arms_after_hold_time(self):
         rig = Rig(distance_m=3.0)
-        out = rig.run("thumbs_up", 0.3)
+        out = rig.run("palm", 0.3)
         self.assertEqual(out.state, ControlState.ARMED, "armed too early")
         self.assertGreater(out.progress, 0.0)
-        rig.run("thumbs_up", 0.4)
+        rig.run("palm", 0.4)
         self.assertEqual(rig.ctrl.state, ControlState.ACTIVE)
 
-    def test_open_palm_does_not_arm(self):
+    def test_flat_palm_does_not_arm(self):
+        """The palm's old failure: a hand lying around open armed the app. Requiring
+        it to be held up fixes that without any thumb geometry."""
         rig = Rig(distance_m=3.0)
+        rig.hand.angle = math.pi / 2
         out = rig.run("palm", 1.5)
-        self.assertEqual(out.state, ControlState.ARMED, "an open palm armed the app")
+        self.assertEqual(out.state, ControlState.ARMED, "a flat palm armed the app")
         self.assertEqual(out.progress, 0.0)
 
     def test_fist_does_not_arm(self):
-        """The stop fist leaves its thumb on the knuckles, so it must never take
-        control."""
+        """The stop fist is not an open hand, so it must never take control."""
         rig = Rig(distance_m=3.0)
         out = rig.run("fist", 1.5)
         self.assertEqual(out.state, ControlState.ARMED, "a fist armed the app")
 
-    def test_sideways_thumb_does_not_arm(self):
-        """Curled fingers with the thumb held out to the side is not a thumbs up:
-        the thumb has to reach along the palm, not across it."""
+    def test_point_does_not_arm(self):
         rig = Rig(distance_m=3.0)
-        out = rig.run("thumb_side", 1.5)
-        self.assertEqual(out.state, ControlState.ARMED,
-                         "a sideways thumb armed the app")
-        self.assertEqual(out.progress, 0.0)
+        out = rig.run("point", 1.5)
+        self.assertEqual(out.state, ControlState.ARMED, "a point armed the app")
 
     def test_fist_releases_and_arm_cooldown_applies(self):
         rig = Rig(distance_m=3.0)
         rig.arm()
         rig.run("fist", 0.6)
         self.assertEqual(rig.ctrl.state, ControlState.ARMED, "fist should release")
-        rig.run("thumbs_up", 0.4)               # inside the cooldown
+        rig.run("palm", 0.4)                    # inside the cooldown
         self.assertEqual(rig.ctrl.state, ControlState.ARMED)
-        rig.run("thumbs_up", 1.0)
+        rig.run("palm", 1.0)
         self.assertEqual(rig.ctrl.state, ControlState.ACTIVE)
 
     def test_hand_lost_releases_control(self):
@@ -383,7 +375,7 @@ class ClickTests(unittest.TestCase):
     def test_a_two_second_point_hover_clicks_once(self):
         """The click gesture: hover the pointing hand ~2 s, nothing else."""
         ctrl = CursorController(Config())
-        hand = FakeHand(pose="thumbs_up", seed=11).at_distance(3.0)
+        hand = FakeHand(pose="palm", seed=11).at_distance(3.0)
         t = 0.0
         for _ in range(int(1.0 / DT)):
             t += DT
@@ -396,14 +388,14 @@ class ClickTests(unittest.TestCase):
             clicks += ctrl.update(hand.landmarks(), now=t).action == "click"
         self.assertEqual(clicks, 1, "a still pointing hand should click once")
 
-    def test_arming_thumbs_up_never_clicks(self):
+    def test_arming_palm_never_clicks(self):
         """The frame that takes control must not also click."""
         rig = Rig(distance_m=3.0)
         clicks = 0
         for _ in range(int(1.5 / DT)):
-            clicks += rig.run("thumbs_up", DT).action == "click"
+            clicks += rig.run("palm", DT).action == "click"
         self.assertEqual(rig.ctrl.state, ControlState.ACTIVE)
-        self.assertEqual(clicks, 0, "the arming thumbs up clicked")
+        self.assertEqual(clicks, 0, "the arming palm clicked")
 
     def test_fist_never_clicks(self):
         """Closing the hand to stop must not also click."""
@@ -415,6 +407,67 @@ class ClickTests(unittest.TestCase):
             clicks += rig.run("fist", DT).action == "click"
         self.assertEqual(rig.ctrl.state, ControlState.ARMED, "fist should release")
         self.assertEqual(clicks, 0, "closing the fist fired a click")
+
+
+class SwipeTests(unittest.TestCase):
+    """The horizontal swipe used to fire on the ANGLE of the V, so a tilt fired a
+    space switch with the hand standing still. It is travel now."""
+
+    def sweep(self, way, distance_m=3.0, travel=0.8):
+        det = SwipeDetector()
+        hand = FakeHand(pose="two", seed=2).at_distance(distance_m)
+        t = 0.0
+        fired = []
+        for _ in range(15):                    # hold it still first
+            t += DT
+            fired.append(det.update(hand.landmarks(), t))
+        step = palm_for_distance(distance_m) * travel / 10.0
+        dx = -step if way == "right" else step   # the user's right is image -x
+        for _ in range(12):
+            t += DT
+            hand.move(dx=dx)
+            fired.append(det.update(hand.landmarks(), t))
+        return [f for f in fired if f]
+
+    def test_holding_two_fingers_still_never_fires(self):
+        det = SwipeDetector()
+        hand = FakeHand(pose="two").at_distance(3.0)
+        out = [det.update(hand.landmarks(), i * DT) for i in range(40)]
+        self.assertFalse(any(out), "a held V fired a swipe")
+
+    def test_a_real_sideways_sweep_fires_once(self):
+        self.assertEqual(self.sweep("right"), ["right"])
+        self.assertEqual(self.sweep("left"), ["left"])
+
+    def test_a_slow_drift_never_accumulates_into_a_swipe(self):
+        det = SwipeDetector()
+        hand = FakeHand(pose="two").at_distance(3.0)
+        t = 0.0
+        fired = []
+        for _ in range(120):                   # 4 s of very slow drift
+            t += DT
+            hand.move(dx=-palm_for_distance(3.0) * 0.02 / 30.0)
+            fired.append(det.update(hand.landmarks(), t))
+        self.assertFalse(any(fired), "slow drift fired a swipe")
+
+    def test_swipe_needs_the_two_finger_pose(self):
+        det = SwipeDetector()
+        hand = FakeHand(pose="palm").at_distance(3.0)
+        out = [det.update(hand.landmarks(), i * DT) for i in range(30)]
+        self.assertFalse(any(out), "an open palm fired a swipe")
+
+    def test_cooldown_swallows_a_repeat(self):
+        det = SwipeDetector()
+        hand = FakeHand(pose="two").at_distance(3.0)
+        step = palm_for_distance(3.0) * 0.8 / 8.0
+        t = 0.0
+        fired = []
+        for rep in range(2):                   # two sweeps, no pause between
+            for _ in range(10):
+                t += DT
+                hand.move(dx=-step)
+                fired.append(det.update(hand.landmarks(), t))
+        self.assertEqual([f for f in fired if f], ["right"])
 
 
 if __name__ == "__main__":

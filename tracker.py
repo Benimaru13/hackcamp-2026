@@ -11,6 +11,7 @@ held in memory and are never written to disk or sent anywhere.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 import urllib.request
@@ -40,6 +41,27 @@ def ensure_model(path=DEFAULT_MODEL, url=MODEL_URL, quiet=False):
     urllib.request.urlretrieve(url, tmp)
     os.replace(tmp, path)
     return path
+
+
+def boost_low_light(img, threshold=85.0, target=105.0):
+    """Night lighting: in a dim room the frame goes dark and flat, and the landmark
+    model finds the hand on one frame and misses it on the next -- exactly the
+    "sometimes it works up close, sometimes it ignores me" behaviour. This maps a
+    dark frame back toward a usable mid-grey with a gamma curve.
+
+    Only the crop handed to the model is touched, so the preview keeps the real
+    picture. No-op in normal light, and it cannot wash out a bright frame.
+    """
+    mean = float(img.mean())
+    if mean >= threshold or mean <= 1.0:
+        return img
+    gamma = math.log(target / 255.0) / math.log(mean / 255.0)
+    gamma = min(max(gamma, 0.35), 1.0)
+    if gamma >= 0.99:
+        return img
+    lut = np.array([min(255, int(((i / 255.0) ** gamma) * 255.0)) for i in range(256)],
+                   dtype=np.uint8)
+    return cv2.LUT(img, lut)
 
 
 @dataclass
@@ -167,15 +189,18 @@ class HandTracker:
         # 1) tracking: crop around the last known hand (the long-range win)
         if self.zoom and self._box is not None:
             attempts.append(self._expand(self._box, 0.35, frame_w, frame_h))
-        # 2) reacquire: full frame, downscaled so the model still sees a hand
-        if self._box is None or self._misses > 0:
-            attempts.append((0, 0, frame_w, frame_h))
+        # 2) reacquire: full frame, downscaled so the model still sees a hand.
+        # Always the fallback, not just after a miss: when the hand leaves the
+        # smoothed box the crop misses, and waiting a frame to notice turned one
+        # stale box into a dropped frame -- the hand "teleporting" out of range.
+        attempts.append((0, 0, frame_w, frame_h))
 
         for (x0, y0, x1, y1) in attempts:
             if x1 - x0 < 24 or y1 - y0 < 24:
                 continue
             sub = frame[y0:y1, x0:x1]
             sub, k = self._resize_for_model(sub)
+            sub = boost_low_light(sub)
             h, w = sub.shape[:2]
             found = self._detect(sub)
             if not found:
