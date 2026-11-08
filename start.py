@@ -69,7 +69,8 @@ def run_sequence(args, calibrate_fn=None, control_fn=None, exists=os.path.exists
         print("\nCalibrated. Taking control...\n")
     else:
         print(f"Using saved calibration: {profile.summary()}")
-        print("(run with --recalibrate to measure again)\n")
+        print("   Measure again:  python start.py --recalibrate")
+        print("   (VS Code: Run and Debug -> 'AirTrack: recalibrate')\n")
 
     if getattr(args, "simulate", False):
         print("Simulated measurement only. Run 'python start.py' without "
