@@ -237,6 +237,7 @@ def render_done(image, profile):
         canvas = np.full((h, w, 3), BG, np.uint8)
     cx = w // 2
     ty = h // 2 - 60
+    # 【修改1】去掉了最后一行的 "Taking control..."
     rows = (
         ("Calibrated", ty, 1.15, ACCENT, 2),
         ((f"{profile.tremor_hz:.1f} Hz tremor   -   {profile.tremor_px:.1f} px   -   "
@@ -245,12 +246,19 @@ def render_done(image, profile):
          ty + 46, 0.52, INK, 1),
         (f"dwell {profile.dwell_time:.2f} s   -   min speed {profile.min_speed:.2f}"
          f"   -   {profile.distance_ft:.1f} ft", ty + 76, 0.46, MUTED, 1),
-        ("Taking control of your computer...", ty + 126, 0.52, INK, 1),
     )
     for text, y, scale, color, thick in rows:
         (tw, _), _ = cv2.getTextSize(text, FONT, scale, thick)
         cv2.putText(canvas, text, (cx - tw // 2, y), FONT, scale, color, thick,
                     cv2.LINE_AA)
+                    
+    # 【新增】绘制绿色的 CONFIRM 按钮
+    bx, by, bw, bh = cx - 100, ty + 120, 200, 50
+    cv2.rectangle(canvas, (bx, by), (bx + bw, by + bh), ACCENT, -1, cv2.LINE_AA)
+    (tw, th), _ = cv2.getTextSize("CONFIRM", FONT, 0.65, 2)
+    cv2.putText(canvas, "CONFIRM", (bx + (bw - tw) // 2, by + (bh + th) // 2), 
+                FONT, 0.65, BG, 2, cv2.LINE_AA)
+                
     return canvas
 
 
@@ -309,28 +317,39 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                 last_lm = lm
 
             if phase == "arm":
+               
                 if has_hand and is_arm_pose(lm):
                     if arm_since is None:
                         arm_since = now
+                   
+                    progress = min((now - arm_since) / ARM_SECONDS, 1.0)
                 else:
+                   
                     arm_since = None
-                progress = (0.0 if arm_since is None
-                            else min((now - arm_since) / ARM_SECONDS, 1.0))
+                    progress = 0.0
+                    
                 hint = "Raise an open palm toward the camera. Stand about 3 m back."
                 if progress >= 1.0:
                     phase, phase_start = "measure", now
                     meter.reset()
                     print("[1/2] hand found")
             else:
-                # One window does both jobs: the fingertip gives the tremor, the
-                # wrist-to-knuckle span gives the distance. Nothing is asked of
-                # the user beyond holding still, which is the point.
+              
                 if has_hand:
                     sx, sy = lm[8].x * width, lm[8].y * height
                     meter.push(sx, sy)
                     samples.append((now, sx, sy))
                     palms.append(hand_scale(lm))
-                progress = min((now - phase_start) / MEASURE_SECONDS, 1.0)
+                    
+                    progress = min((now - phase_start) / MEASURE_SECONDS, 1.0)
+                else:
+                   
+                    phase_start = now
+                    progress = 0.0
+                    meter.reset()
+                    samples.clear()
+                    palms.clear()
+                    
                 hint = "Hold still and keep pointing - measuring your hand."
                 if progress >= 1.0:
                     break
@@ -375,9 +394,26 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                   f"  {profile.summary()}")
 
         if show and last_image is not None:
-            for _ in range(15):          # flash the card ~0.3 s, then hand over
-                cv2.imshow(WIN, render_done(last_image, profile))
-                if (cv2.waitKey(20) & 0xFF) in (27, ord("q")):
+            # 1. 注册鼠标点击事件
+            clicked = [False]
+            def check_click(event, x, y, flags, param):
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    h, w = last_image.shape[:2]
+                    cx = w // 2
+                    # 匹配刚才画的按钮坐标
+                    bx, by, bw, bh = cx - 100, h // 2 + 60, 200, 50
+                    if bx <= x <= bx + bw and by <= y <= by + bh:
+                        clicked[0] = True
+            
+            cv2.setMouseCallback(WIN, check_click)
+            done_img = render_done(last_image, profile)
+            
+            # 2. 无限循环显示，直到用鼠标点击按钮，或者按下回车/空格键
+            while not clicked[0]:
+                cv2.imshow(WIN, done_img)
+                key = cv2.waitKey(20) & 0xFF
+                # 支持键盘直接敲击继续作为备用方案
+                if key in (27, ord("q"), 13, 32): 
                     break
         return profile
     finally:

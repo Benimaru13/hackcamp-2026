@@ -516,7 +516,7 @@ class ScrollDetector:
         if now < self._next:
             return 0
         self._next = now + self.interval
-        return 1 if way == "up" else -1
+        return 2 if way == "up" else -2
 
 
 # ---------------------------------------------------------------- output
