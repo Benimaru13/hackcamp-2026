@@ -1,17 +1,18 @@
-"""instruction_panel.py -- the frosted-glass panel shown right after measuring.
+"""instruction_panel.py -- the frosted tutorial panel shown after measuring.
 
-It is drawn into a frame the app is already showing, so the "platform" look costs
-no window, no browser and no focus. Calibration finishes, the tracker takes the
-camera it already has, and the first thing the preview shows is this panel: what
-was measured, and the four gestures in the order they are needed. It fades away
-by itself the moment you take control, so it never sits between you and the
+It answers "what do I do now?" without leaving the app: what was measured, what
+ARMED and ACTIVE mean, and every gesture with the hold this run is actually
+using. It is drawn into a frame the app already shows, so it costs no window, no
+browser and no focus -- calibration finishes, the tracker takes the camera it
+already has, and the first thing the preview shows is this. It fades away by
+itself the moment you take control, so it never sits between you and the
 computer.
 
-OpenCV has no backdrop blur, so the glass is an honest approximation rather than
-the real thing: blur the pixels behind the panel, tint them, soften the edge and
-light the top rim. Over a dark camera feed that reads as frosted glass.
+OpenCV has no backdrop blur, so the glass is an honest approximation: blur the
+pixels behind the panel, tint them, soften the edge and light the top rim. Over a
+dark camera feed that reads as frosted glass.
 
-    draw_instruction_panel(frame, profile, cfg)          # bottom-left
+    draw_instruction_panel(frame, profile, cfg)          # bottom, centred
     draw_instruction_panel(frame, profile, cfg, corner="center")
 """
 from __future__ import annotations
@@ -24,7 +25,9 @@ RIM = (118, 114, 108)        # 1 px edge
 RIM_LIGHT = (198, 194, 188)  # top rim, where the light catches
 INK = (240, 238, 234)
 MUTED = (152, 147, 140)
-ACCENT = (212, 234, 94)      # the same teal the calibration screen uses
+ACCENT = (212, 234, 94)      # the calibration screen's teal
+AMBER = (0, 176, 255)        # the app's ARMED colour
+GREEN = (90, 255, 120)       # the app's ACTIVE colour
 FONT = cv2.FONT_HERSHEY_DUPLEX
 
 
@@ -79,8 +82,8 @@ def frosted(canvas, box, radius=16, alpha=0.84, blur=25, tint=TINT):
     cv2.polylines(overlay, [path], True, RIM, 1, cv2.LINE_AA)
     cv2.line(overlay, (x0 + int(radius), y0 + 1), (x1 - int(radius), y0 + 1),
              RIM_LIGHT, 1, cv2.LINE_AA)
-    canvas[:] = cv2.addWeighted(overlay, max(0.0, min(float(alpha), 1.0)), canvas,
-                                1.0 - max(0.0, min(float(alpha), 1.0)), 0)
+    k_alpha = max(0.0, min(float(alpha), 1.0))
+    canvas[:] = cv2.addWeighted(overlay, k_alpha, canvas, 1.0 - k_alpha, 0)
     return canvas
 
 
@@ -96,94 +99,135 @@ def _summary(profile):
             f"  |  {profile.distance_ft:.1f} ft")
 
 
-def _gestures(cfg):
-    """The four things to do, with the holds this run is actually using."""
-    arm = getattr(cfg, "arm_hold", 0.6)
-    dwell = getattr(cfg, "dwell_time", 2.0)
-    switch = getattr(cfg, "switch_hold", getattr(cfg, "swipe_hold", 0.55))
+def _states():
+    """What the two live states mean, in the colours the halo uses."""
     return (
-        ("1", "Open palm", f"{arm:.1f} s", "take control"),
-        ("2", "Point", "", "cursor follows"),
-        ("3", "Hold still", f"{dwell:.1f} s", "click"),
-        ("4", "Two fingers", f"{switch:.1f} s", "switch space"),
+        ("ARMED", AMBER, "watching - your cursor is untouched"),
+        ("ACTIVE", GREEN, "gestures are driving the computer"),
     )
 
 
-def _layout(shape, corner, nrows, s):
-    """Panel box + the offsets the drawing pass will use. One source of truth."""
+def _gestures(cfg):
+    """What to do, with the holds and thresholds this run is actually using."""
+    arm = getattr(cfg, "arm_hold", 0.6)
+    dwell = getattr(cfg, "dwell_time", 2.0)
+    switch = getattr(cfg, "switch_hold", getattr(cfg, "swipe_hold", 0.55))
+    stop = getattr(cfg, "stop_hold", 0.35)
+    return (
+        ("1", "Open palm", f"hold {arm:.1f} s", "take control"),
+        ("2", "Point", "", "move the cursor"),
+        ("3", "Point, still", f"hold {dwell:.1f} s", "one click"),
+        ("4", "Two fingers up/down", "hold", "scroll"),
+        ("5", "Two fingers left/right", f"hold {switch:.1f} s", "switch space"),
+        ("6", "Fist", f"hold {stop:.2f} s", "release"),
+    )
+
+
+def _layout(shape, corner, n_states, n_rows, s):
+    """Panel box + the vertical rhythm the drawing pass uses. One source of truth."""
     h, w = shape[:2]
     pad = int(26 * s)
-    title_h = int(30 * s)
-    head_h = int(22 * s)
-    rule_h = int(16 * s)
+    title_h = int(36 * s)
+    head_h = int(34 * s)
     row_h = int(30 * s)
-    foot_h = int(30 * s)
-    ph = pad * 2 + title_h + head_h + rule_h + row_h * nrows + foot_h
-    pw = int(min(max(w * 0.47, 380 * s), w - 2 * pad))
-    ph = int(min(ph, h - 2 * pad))
+    state_h = int(52 * s)
+    foot_h = int(34 * s)
+    body_h = max(state_h * n_states, row_h * n_rows)
+    ph = int(min(pad * 2 + title_h + head_h + body_h + foot_h, h - 2 * pad))
+    pw = int(min(max(w * 0.80, 640 * s), w - 2 * pad))
     if corner == "center":
         x0, y0 = (w - pw) // 2, (h - ph) // 2
-    else:
+    elif corner == "bl":
         x0, y0 = pad, h - ph - pad
+    else:
+        x0, y0 = (w - pw) // 2, h - ph - pad
     return {"box": (x0, y0, x0 + pw, y0 + ph), "pad": pad, "title_h": title_h,
-            "head_h": head_h, "rule_h": rule_h, "row_h": row_h, "foot_h": foot_h,
+            "head_h": head_h, "row_h": row_h, "state_h": state_h,
+            "foot_h": foot_h, "body_h": body_h, "left_w": int(pw * 0.38),
             "scale": s}
 
 
-def draw_instruction_panel(frame, profile=None, cfg=None, alpha=1.0, corner="bl"):
-    """Draw the panel onto `frame` and return it (a copy unless alpha <= 0)."""
+# ------------------------------------------------------------------ panel
+def draw_instruction_panel(frame, profile=None, cfg=None, alpha=1.0,
+                           corner="bottom"):
+    """Draw the tutorial panel onto `frame` and return it (a copy unless alpha<=0)."""
     if frame is None or alpha <= 0:
         return frame
     out = frame.copy()
-    h, w = out.shape[:2]
-    s = h / 720.0
-    head = _summary(profile)
-    rows = _gestures(cfg) if cfg is not None else (
-        ("1", "Open palm", "0.6 s", "take control"),
-        ("2", "Point", "", "cursor follows"),
-        ("3", "Hold still", "2.0 s", "click"),
-        ("4", "Two fingers", "0.6 s", "switch space"))
-    lay = _layout(out.shape, corner, len(rows), s)
+    s = out.shape[0] / 720.0
+    states = _states()
+    gestures = _gestures(cfg) if cfg is not None else (
+        ("1", "Open palm", "hold 0.6 s", "take control"),
+        ("2", "Point", "", "move the cursor"),
+        ("3", "Point, still", "hold 2.0 s", "one click"),
+        ("4", "Two fingers up/down", "hold", "scroll"),
+        ("5", "Two fingers left/right", "hold 0.6 s", "switch space"),
+        ("6", "Fist", "hold 0.35 s", "release"))
+    lay = _layout(out.shape, corner, len(states), len(gestures), s)
 
-    out = frosted(out, lay["box"], radius=int(16 * s), alpha=0.84 * float(alpha),
-                  blur=max(3, int(25 * s)))
+    out = frosted(out, lay["box"], radius=int(16 * s),
+                  alpha=0.86 * float(alpha), blur=max(3, int(25 * s)))
     x0, y0, x1, _ = lay["box"]
     x = x0 + lay["pad"]
     right = x1 - lay["pad"]
-    y = y0 + lay["pad"] + int(20 * s)
+    s = lay["scale"]
+    y = y0 + lay["pad"] + int(22 * s)
 
-    cv2.putText(out, "AIRTRACK READY", (x, y), FONT, 0.62 * s, ACCENT,
+    # Title row: name, what this is, and what it measured.
+    cv2.putText(out, "AIRTRACK", (x, y), FONT, 0.60 * s, ACCENT,
                 max(1, int(2 * s)), cv2.LINE_AA)
-    # "the camera is yours" is the one thing worth saying twice
-    label = "raise an open palm" if profile is not None else "run calibrate.py"
-    (tw, _), _ = cv2.getTextSize(label, FONT, 0.38 * s, 1)
-    cv2.putText(out, label, (right - tw, y), FONT, 0.38 * s, MUTED, 1, cv2.LINE_AA)
+    (tw, _), _ = cv2.getTextSize("AIRTRACK", FONT, 0.60 * s, max(1, int(2 * s)))
+    cv2.putText(out, "how to use it", (x + tw + int(14 * s), y), FONT, 0.42 * s,
+                INK, 1, cv2.LINE_AA)
+    summary = _summary(profile)
+    (sw_, _), _ = cv2.getTextSize(summary, FONT, 0.38 * s, 1)
+    cv2.putText(out, summary, (right - sw_, y), FONT, 0.38 * s, MUTED, 1,
+                cv2.LINE_AA)
     y += lay["title_h"]
-
-    cv2.putText(out, head, (x, y), FONT, 0.40 * s, MUTED, 1, cv2.LINE_AA)
-    y += lay["head_h"]
-
-    cv2.line(out, (x, y - int(6 * s)), (right, y - int(6 * s)), (70, 66, 61), 1,
-             cv2.LINE_AA)
-    y += lay["rule_h"]
-
-    for num, gesture, hold, effect in rows:
-        cy = y - int(4 * s)
-        cv2.circle(out, (x + int(9 * s), cy), int(9 * s), ACCENT, 1, cv2.LINE_AA)
-        (nw, nh), _ = cv2.getTextSize(num, FONT, 0.34 * s, 1)
-        cv2.putText(out, num, (x + int(9 * s) - nw // 2, cy + nh // 2), FONT,
-                    0.34 * s, ACCENT, 1, cv2.LINE_AA)
-        cv2.putText(out, gesture, (x + int(28 * s), y), FONT, 0.44 * s, INK, 1,
-                    cv2.LINE_AA)
-        (hw, _), _ = cv2.getTextSize(hold, FONT, 0.38 * s, 1)
-        cv2.putText(out, hold, (x + int(196 * s) - hw, y), FONT, 0.38 * s, MUTED, 1,
-                    cv2.LINE_AA)
-        cv2.putText(out, effect, (x + int(212 * s), y), FONT, 0.38 * s, INK, 1,
-                    cv2.LINE_AA)
-        y += lay["row_h"]
-
     cv2.line(out, (x, y - int(10 * s)), (right, y - int(10 * s)), (70, 66, 61), 1,
              cv2.LINE_AA)
-    cv2.putText(out, "fist releases  -  Esc quits  -  this panel fades", (x, y),
-                FONT, 0.36 * s, MUTED, 1, cv2.LINE_AA)
+
+    # Column headings.
+    left_x = x
+    right_x = x + lay["left_w"]
+    cv2.putText(out, "STATES", (left_x, y + int(12 * s)), FONT, 0.34 * s, MUTED, 1,
+                cv2.LINE_AA)
+    cv2.putText(out, "GESTURES", (right_x, y + int(12 * s)), FONT, 0.34 * s, MUTED,
+                1, cv2.LINE_AA)
+    y += lay["head_h"]
+
+    # Left: ARMED / ACTIVE, in the halo's own colours.
+    for i, (name, color, meaning) in enumerate(states):
+        sy = y + i * lay["state_h"] + int(12 * s)
+        cv2.circle(out, (left_x + int(6 * s), sy - int(4 * s)), int(6 * s), color,
+                   -1, cv2.LINE_AA)
+        cv2.putText(out, name, (left_x + int(20 * s), sy), FONT, 0.46 * s, color, 1,
+                    cv2.LINE_AA)
+        cv2.putText(out, meaning, (left_x, sy + int(20 * s)), FONT, 0.33 * s, MUTED,
+                    1, cv2.LINE_AA)
+
+    # Right: one line per gesture, effect flush right so the list reads as a table.
+    for i, (num, gesture, hold, effect) in enumerate(gestures):
+        gy = y + i * lay["row_h"] + int(14 * s)
+        cv2.circle(out, (right_x + int(9 * s), gy - int(4 * s)), int(9 * s), ACCENT,
+                   1, cv2.LINE_AA)
+        (nw, nh), _ = cv2.getTextSize(num, FONT, 0.32 * s, 1)
+        cv2.putText(out, num, (right_x + int(9 * s) - nw // 2, gy - int(4 * s) + nh // 2),
+                    FONT, 0.32 * s, ACCENT, 1, cv2.LINE_AA)
+        cv2.putText(out, gesture, (right_x + int(26 * s), gy), FONT, 0.40 * s, INK, 1,
+                    cv2.LINE_AA)
+        if hold:
+            (gw, _), _ = cv2.getTextSize(gesture, FONT, 0.40 * s, 1)
+            cv2.putText(out, hold, (right_x + int(34 * s) + gw, gy), FONT, 0.34 * s,
+                        MUTED, 1, cv2.LINE_AA)
+        (ew, _), _ = cv2.getTextSize(effect, FONT, 0.36 * s, 1)
+        cv2.putText(out, effect, (right - ew, gy), FONT, 0.36 * s, INK, 1, cv2.LINE_AA)
+
+    # Footer.
+    fy = y0 + lay["pad"] + lay["title_h"] + lay["head_h"] + lay["body_h"]
+    cv2.line(out, (x, fy + int(2 * s)), (right, fy + int(2 * s)), (70, 66, 61), 1,
+             cv2.LINE_AA)
+    cv2.putText(out, "space toggles control  -  Esc or q quits  -  this panel "
+                     "fades when you take control",
+                (x, fy + int(22 * s)), FONT, 0.34 * s, MUTED, 1, cv2.LINE_AA)
     return out
