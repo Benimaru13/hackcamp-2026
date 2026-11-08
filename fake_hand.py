@@ -38,6 +38,8 @@ _EXTENDED = {
     "pinch": {"index"},
     "fist": set(),
     "relaxed": set(),
+    "thumb_left": set(),
+    "thumb_right": set(),
 }
 
 _THUMB_OPEN = [(0.30, 0.02), (0.62, -0.22), (0.86, -0.46), (1.06, -0.68)]
@@ -45,6 +47,10 @@ _THUMB_OPEN = [(0.30, 0.02), (0.62, -0.22), (0.86, -0.46), (1.06, -0.68)]
 # up between the index and middle knuckles -- close enough to the folded index tip
 # to measure like a pinch, which is why is_fist checks the tips as well.
 _THUMB_TUCK = [(0.30, 0.02), (0.50, -0.35), (0.10, -0.80), (-0.18, -1.02)]
+# A loose fist with the thumb held straight out to one side: the screen-switch
+# gesture. Written for the user's left; the right pose mirrors x, which is the
+# way the unmirrored camera sees the other side.
+_THUMB_SIDE = [(0.30, 0.02), (0.56, -0.04), (0.66, -0.11), (0.76, -0.18)]
 
 
 def hand_template_finger_tip(name="index"):
@@ -59,12 +65,19 @@ def hand_template(pose="point"):
     ext = _EXTENDED.get(pose, _EXTENDED["point"])
     pts = [(0.0, 0.0)]                      # 0 wrist
 
-    thumb = list(_THUMB_OPEN if pose != "fist" else _THUMB_TUCK)
     if pose == "pinch":
         # thumb tip meets the extended index tip, as in a real pinch
         index_tip = hand_template_finger_tip("index")
         thumb = [(0.30, 0.02), (0.20, -0.60), (-0.10, -1.35),
                  (index_tip[0] + 0.01, index_tip[1] + 0.01)]
+    elif pose in ("thumb_left", "thumb_right"):
+        sign = 1.0 if pose == "thumb_left" else -1.0
+        thumb = [(sign * x, y) for x, y in _THUMB_SIDE]
+    else:
+        # A relaxed hand lets the thumb rest against the curled fingers, so it
+        # is not held out to the side.
+        thumb = list(_THUMB_OPEN if pose not in ("fist", "relaxed")
+                     else _THUMB_TUCK)
     pts += thumb[:4]                        # 1..4 thumb
 
     for name in ("index", "middle", "ring", "pinky"):

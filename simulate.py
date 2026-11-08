@@ -125,6 +125,26 @@ def scenario_gestures(distance_m=3.0):
     return logs
 
 
+def scenario_switch(distance_m=3.0):
+    """Screen switch: a sideways thumb held. Show when it fires, and that a thumb
+    left up cannot fire twice -- the return stroke failure that started this."""
+    from gesture_cursor import SwipeDetector
+    cfg = Config()
+    rows = []
+    for way in ("left", "right"):
+        det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
+        hand = FakeHand(pose="thumb_" + way).at_distance(distance_m)
+        t = 0.0
+        fired = []
+        for _ in range(int(3.0 / DT)):          # three seconds, no release
+            t += DT
+            got = det.update(hand.landmarks(), t)
+            if got:
+                fired.append((round(t, 2), got))
+        rows.append((way, fired))
+    return rows
+
+
 def scenario_tune():
     """Shake threshold vs steady behaviour: how much does the cursor wander in
     10 s of a still, shaky hand, and does a real sweep still move the cursor?"""
@@ -184,6 +204,16 @@ def main(argv):
         print("gesture sequence at 3 m (time, state, action)")
         for t, state, action in scenario_gestures():
             print(f"  {t:5.2f}s  {state:<7} {action}")
+        print()
+
+    if which in ("all", "switch"):
+        print("screen switch: sideways thumb held at 3 m, held 3 s without releasing")
+        for way, fired in scenario_switch():
+            if fired:
+                when = ", ".join(f"{t:.2f}s '{d}'" for t, d in fired)
+                print(f"  thumb {way:<5}: {len(fired)} command(s) at {when}")
+            else:
+                print(f"  thumb {way:<5}: never fired")
 
     return 0
 

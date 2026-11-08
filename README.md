@@ -25,7 +25,7 @@ python app.py                # run it; raise an open palm to take control
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical swipe | scrolls up/down, one wheel step per 0.15 s, ACTIVE only |
-| Two-finger sideways swipe | sends ctrl+← / ctrl+→, ACTIVE only, needs real sideways travel |
+| Sideways thumb, held 0.75 s | sends ctrl+← / ctrl+→ (previous / next space), ACTIVE only |
 | Volume / media keys | not in the MVP |
 
 ---
@@ -39,7 +39,7 @@ python app.py                # run it; raise an open palm to take control
 | ☝️ Index finger, held still ~2 s | ACTIVE | one click, where it settled; move away to click again |
 | ✊ Fist, held ~0.35 s | ACTIVE | releases control (back to ARMED) |
 | ✌️ Two fingers, pointing up/down | ACTIVE | scrolls (one wheel step every 0.15 s) |
-| ✌️ Two fingers, moved sideways | ACTIVE | sends ctrl+← / ctrl+→ (a real swipe, ~5 cm of travel) |
+| 👍 Thumb straight out to one side, other fingers curled, held ~0.75 s | ACTIVE | sends ctrl+← / ctrl+→ (previous / next space) |
 | — Esc / `q` / Ctrl-C | any time | quits, control released |
 
 Hovering is the only click, and it needs no extra pose: aim, stop moving, and after
@@ -77,6 +77,21 @@ for one cooldown, so the frame that arms never also clicks
 (`test_arming_palm_never_clicks`). The click is still a *still pointing hand*, so
 no other pose can fire one.
 
+**Why a held thumb for the switch?** Two earlier swipes failed for the same
+reason: a swipe is a *stroke*, and a stroke has a return. Firing on the angle of
+the two-finger V fired with the hand standing still. Firing on sideways travel
+then fired on the return stroke as well — the hand comes back to where it started
+within a second, so one swipe became two commands, or the opposite one if the
+first was missed. A **hold** has nothing to misread: thumb straight out to the
+left or right, other fingers curled, held 0.75 s, one command. After that the
+hand has to drop the pose and a 1 s cooldown has to pass, so leaving the thumb up
+cannot repeat and putting your hand back cannot fire anything. It is built out of
+two big distances from the wrist (how far the thumb reaches, how sideways it
+sits), not fine joint angles, which makes it the one gesture here that gets
+*easier* to hit when you are deliberate. Because the pose is also a curled fist,
+`classify_pose()` reads the thumb before the fist — otherwise the switch would
+release control halfway through its own hold.
+
 ### Interaction states
 
 ```
@@ -85,7 +100,7 @@ no other pose can fire one.
   (camera       (amber halo,    (cursor        (green halo,
    released)     "watching")      untouched)     gestures control the cursor)
                                    ^
-                                   |  hand gone > 2 s  (safety timeout)
+                                   |  hand gone > 1.2 s  (safety timeout)
 ```
 
 - **OFF** — nothing is read. Space toggles ARMED ↔ OFF while the preview is open.
@@ -242,9 +257,10 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 51 tests, no camera needed
+python -m unittest discover -s tests -v   # 57 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
+python simulate.py switch                 # thumb hold: when it fires, and no repeat
 ```
 
 The tests cover: pose classification at 1 m and 3 m (including a rotated hand),
@@ -255,9 +271,10 @@ cooldown after a release, the lost-hand safety release, the same sweep moving th
 cursor the same distance near and far, no cursor drift from a shaky still hand, a
 2 s point hover clicking once where it settled, staying put never clicking twice,
 palm/fist/pinch never clicking, and dropping the pointing pose cancelling a
-half-finished dwell. The swipe is tested on its own: a held V never fires, a real
-sideways sweep fires exactly once in each direction, slow drift never accumulates
-into one, an open palm cannot fire it, and the cooldown swallows a repeat.
+half-finished dwell. The screen switch is tested on its own: a held thumb fires
+exactly once in each direction at 1 m, 2 m and 3 m, it does not fire before
+0.75 s, no other pose can fire it, a held thumb never repeats, a direction flip
+or a release restarts it, and a couple of dropped frames do not.
 
 What is **not** verified yet: an actual person at 10 ft with a real webcam. The
 tracking pipeline runs on this machine (camera + model + frames), but the
@@ -269,9 +286,11 @@ and record what you see.
 
 ## Known issues
 
-- **The swipe wants a real hand movement** (~0.55 palm-lengths, about 5 cm, inside
-  1.2 s). A quick flick with the wrist alone may not register; a deliberate sweep
-  does. `Config.swipe_travel` is the knob: lower it for a lighter trigger.
+- **The screen switch is a hold, not a swipe.** Thumb out to one side, other
+  fingers curled, held 0.75 s; the hand must drop the pose before it can fire
+  again. If it feels strict at 10 ft, lower `Config.swipe_hold`; if it fires while
+  you are just holding your hand, raise it. `Config.swipe_cooldown` is the 1 s
+  pause afterwards.
 - **Dim rooms still cost accuracy.** `tracker.py` brightens the frame handed to the
   model and always retries a full-frame scan, but a detector is still a detector:
   face a lamp, not a window, during the demo.

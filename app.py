@@ -109,6 +109,13 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
         cx, cy = X(tip.x), int(tip.y * h)
         _arc(frame, (cx, cy), 30, out.progress, COLORS[out.state], 3)
         cv2.circle(frame, (cx, cy), 6, COLORS[out.state], -1, cv2.LINE_AA)
+        # Screen-switch hold: a second ring on the thumb tip, so a hold that is
+        # half done is visible from across the room.
+        swipe_progress = float(extra.get("swipe", 0.0))
+        if swipe_progress > 0.0:
+            thumb = fr.landmarks[4]
+            _arc(frame, (X(thumb.x), int(thumb.y * h)), 22, swipe_progress,
+                 (0, 220, 255), 3)
 
     label = {"armed": "ARMED  (watching)", "active": "ACTIVE  (controlling)",
              "off": "OFF"}[out.state.value]
@@ -120,6 +127,7 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
             if out.distance_cm else "hand: -",
             f"zoom: {fr.zoom:.1f}x",
             f"{fr.fps:.0f} fps",
+            "switch: thumb left/right, hold 0.75 s",
             f"speed {extra['speed']:.2f}  min speed {extra['min_speed']:.2f}",
             f"click: {extra['click']}{'  [DRY RUN]' if extra['dry'] else ''}"]
     y = h - 20 - 22 * (len(info) - 1)
@@ -211,6 +219,8 @@ def main(argv=None):
     print("ARMED: raise an open palm toward the camera for half a second to "
           "take control.")
     print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
+    print("Switch space: thumb straight left/right, other fingers curled, hold "
+          "0.75 s (ACTIVE only).")
     if args.dry_run:
         print("DRY RUN: the cursor will not move.")
 
@@ -226,7 +236,7 @@ def main(argv=None):
     frames = detections = clicks = 0
     state = None
     t_start = time.monotonic()
-    swipe_det = SwipeDetector(cfg.swipe_travel, cfg.swipe_window, cfg.swipe_cooldown)
+    swipe_det = SwipeDetector(cfg.swipe_hold, cfg.swipe_cooldown)
     scroll_dir = None
     last_scroll_time = 0.0
     
@@ -268,13 +278,15 @@ def main(argv=None):
                     print(f"[{current_time - t_start:6.1f}s] ✌️ scroll stopped")
                 scroll_dir = None
 
-            # Two-finger horizontal: previous/next space. ACTIVE only -- it used
-            # to fire in every state, which changed screens with nothing armed and
-            # no way to tell it had happened. And it is a SWIPE now: SwipeDetector
-            # wants real sideways travel, not a tilted V.
+            # Screen switch: a sideways thumb HELD for 0.75 s. ACTIVE only -- it
+            # used to fire in every state, so it changed screens with nothing
+            # armed. It is a hold, not a swipe, so the return stroke of a hand
+            # gesture is not input at all.
             swipe = swipe_det.update(fr.landmarks, current_time)
             if swipe and out.state is ControlState.ACTIVE:
-                print(f"[{current_time - t_start:6.1f}s] ✌️ 2-FINGER SWIPE {swipe.upper()}")
+                where = "previous" if swipe == "left" else "next"
+                print(f"[{current_time - t_start:6.1f}s] 👍 THUMB {swipe.upper()}"
+                      f" -> {where} space")
                 if pyautogui is not None and not args.dry_run:
                     pyautogui.hotkey("ctrl", swipe)
             if out.state is not state:
@@ -310,6 +322,7 @@ def main(argv=None):
             if gui:
                 frame = draw_hud(fr.image, out, fr, {
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
+                    "swipe": swipe_det.progress(current_time),
                     "click": "hold still", "dry": args.dry_run},
                     mirror=cfg.mirror, halo=halo_in_preview)
                 cv2.imshow(WIN, frame)

@@ -26,6 +26,7 @@ from enum import Enum
 
 PINCH_RATIO = 0.38        # thumb-index gap / palm length below which it is a pinch
 PALM_UPRIGHT = 0.35       # cos(tilt): knuckles this far above the wrist count as upright
+THUMB_SIDE_REACH = 0.65   # thumb tip this far from the wrist = held straight out
 
 
 # ---------------------------------------------------------------- config
@@ -78,14 +79,13 @@ class Config:
     palm_upright: float = PALM_UPRIGHT  # how upright an arming palm has to be
     stop_hold: float = 0.35      # fist held this long releases control
     arm_cooldown: float = 0.60   # ignore the arm gesture right after a release
-    lost_timeout: float = 2.0    # hand gone this long while ACTIVE => release control
+    lost_timeout: float = 1.2    # hand gone this long while ACTIVE => release control
     enter_frames: int = 3        # debounce: fast to accept a pose
     exit_frames: int = 4         # slow to drop it (handles 1-2 dropped frames)
 
-    # --- two-finger swipe -------------------------------------------------
-    swipe_travel: float = 0.55   # sideways travel (palm-lengths) that fires a swipe
-    swipe_window: float = 1.2    # ...within this long
-    swipe_cooldown: float = 1.2  # then stay quiet this long
+    # --- screen switch: sideways thumb held ------------------------------
+    swipe_hold: float = 0.75     # hold a sideways thumb this long for one command
+    swipe_cooldown: float = 1.0  # then ignore the gesture this long
 
     # --- misc ------------------------------------------------------------
     palm_cm: float = 9.0         # assumed palm length, only for the distance readout
@@ -181,9 +181,10 @@ def is_pointing(lm):
 def two_finger_direction(lm):
     """Which way an index+middle V points: "up", "down", "left" or "right".
 
-    Used for swipe (left/right) and slow scroll (up/down). Requiring exactly
-    those two fingers to be extended keeps an open palm, a fist and a
-    single-finger point from ever triggering it.
+    Only the up/down halves are used now (slow scroll); the sideways halves are
+    the honest reading of the pose. Requiring exactly those two fingers to be
+    extended keeps an open palm, a fist and a single-finger point from ever
+    triggering it.
     """
     if lm is None:
         return None
@@ -203,6 +204,27 @@ def two_finger_direction(lm):
         return "up" if dy < 0 else "down"
     if abs(dx) < 0.8 * scale or abs(dy) > 0.6 * scale:
         return None
+    return "right" if dx < 0 else "left"
+
+
+def thumb_direction(lm, reach=THUMB_SIDE_REACH):
+    """Which way a thumb held straight out to one side points: "left", "right"
+    or None. This is the screen-switch gesture.
+
+    Built out of two large, forgiving measurements -- how far the thumb tip is
+    from the wrist, and how sideways it sits -- because that is what still reads
+    at 3 m in dim light. Fine thumb-to-finger geometry (the one thing the curved
+    poses below need) is what kept collapsing. A relaxed or tucked fist keeps
+    its thumb close to the wrist, so it never reads as a direction.
+    """
+    if lm is None or any(fingers_up(lm)):
+        return None
+    s = max(hand_scale(lm), 1e-6)
+    dx = lm[THUMB_TIP].x - lm[WRIST].x
+    dy = lm[THUMB_TIP].y - lm[WRIST].y
+    if abs(dx) < reach * s or abs(dy) > 0.6 * abs(dx):
+        return None
+    # The camera image is not mirrored: the user's right is the image's left.
     return "right" if dx < 0 else "left"
 
 
@@ -257,14 +279,20 @@ def is_fist(lm):
 
 
 def classify_pose(lm):
-    """Single label for the HUD. Precedence: fist (stop) beats pinch beats palm
-    (arm) beats point (move).
+    """Single label for the HUD. Precedence: side thumb (screen switch) beats
+    fist (stop) beats pinch beats palm (arm) beats point (move).
 
-    The palm is reported whenever the hand is open; whether it is upright enough
-    to actually arm is checked separately (is_arm_pose), the same way the fist is
-    only the stop gesture while ACTIVE."""
+    The side thumb has to come before the fist: a thumb held out is also a curled
+    hand, so reading it as a fist would make the screen switch release control
+    halfway through its own hold. The palm is reported whenever the hand is open;
+    whether it is upright enough to actually arm is checked separately
+    (is_arm_pose), the same way the fist is only the stop gesture while ACTIVE.
+    """
     if lm is None:
         return ""
+    side = thumb_direction(lm)
+    if side:
+        return "thumb_" + side
     if is_fist(lm):
         return "fist"
     if pinch_gap(lm) < PINCH_RATIO:
@@ -331,46 +359,65 @@ class Gate:
 
 
 class SwipeDetector:
-    """Horizontal two-finger swipe, detected as TRAVEL, not as a finger angle.
+    """Screen switch: hold a sideways thumb, get exactly one command.
 
-    The old test looked at which way the V leaned, so simply tilting the fingers
-    fired a space switch without the hand moving at all -- which is why it felt
-    random, failed when people did swipe, and fired while the controller was off.
-    This needs the hand itself to cross `travel` palm-lengths sideways within
-    `window` seconds while the V is held, then it stays quiet for `cooldown`.
+    Two earlier readings of this gesture failed on the demo table, both because
+    they were *strokes*. Firing on the angle of the two-finger V fired with the
+    hand standing still. Firing on sideways travel then fired on the return
+    stroke as well -- the hand comes back to where it started within a second,
+    so one swipe became two commands, or the wrong one if the first was missed.
+
+    A hold has no stroke to misread: point the thumb left or right with the other
+    fingers curled and hold it `hold` seconds. After it fires the hand has to
+    drop the pose and `cooldown` seconds have to pass, so a thumb left held up
+    can never repeat, and the natural "put my hand back" motion is not input at
+    all. A few dropped detector frames (up to `grace` seconds) do not restart the
+    hold; a direction flip does.
     """
 
-    def __init__(self, travel=0.55, window=1.2, cooldown=1.2):
-        self.travel, self.window, self.cooldown = travel, window, cooldown
-        self._x = None
-        self._t = 0.0
+    def __init__(self, hold=0.75, cooldown=1.0, grace=0.2):
+        self.hold, self.cooldown, self.grace = hold, cooldown, grace
+        self._dir = None
+        self._t0 = 0.0
+        self._seen = -1e9
         self._ready_at = -1e9
+        self._must_release = False
 
     def reset(self):
-        self._x = None
+        self._dir = None
+        self._t0 = 0.0
+        self._seen = -1e9
+
+    def progress(self, now):
+        """0..1 of the hold in progress, for the HUD."""
+        if self._dir is None or self.hold <= 0:
+            return 0.0
+        return min(max((now - self._t0) / self.hold, 0.0), 1.0)
 
     def update(self, lm, now):
-        """"left" / "right" on the frame the swipe completes, else None."""
-        if lm is None or now < self._ready_at:
+        """"left" / "right" on the frame the hold completes, else None."""
+        way = thumb_direction(lm)
+        if way is None:
+            if self._dir is not None and now - self._seen <= self.grace:
+                return None                # a blink at 3 m, not a release
+            self.reset()
+            self._must_release = False
+            return None
+        if self._must_release:
+            return None                    # release first: a held thumb never repeats
+        if now < self._ready_at:
             self.reset()
             return None
-        idx, mid, ring, pink = fingers_up(lm)
-        if not (idx and mid) or ring or pink:
-            self.reset()
+        if way != self._dir:
+            self._dir, self._t0, self._seen = way, now, now
             return None
-        s = max(hand_scale(lm), 1e-6)
-        x = (lm[INDEX_TIP].x + lm[MIDDLE_TIP].x) / 2.0
-        # A slow drift restarts the window, so only a deliberate swipe accumulates
-        # enough travel to fire.
-        if self._x is None or now - self._t > self.window:
-            self._x, self._t = x, now
+        self._seen = now
+        if now - self._t0 < self.hold:
             return None
-        dx = (x - self._x) / s          # image x: the user's right is -x
-        if abs(dx) < self.travel:
-            return None
-        self._x = None
         self._ready_at = now + self.cooldown
-        return "right" if dx < 0 else "left"
+        self._must_release = True
+        self.reset()
+        return way
 
 
 # ---------------------------------------------------------------- output
