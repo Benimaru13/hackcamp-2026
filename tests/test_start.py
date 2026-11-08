@@ -1,7 +1,8 @@
-"""start.py is only the sequencing: calibrate when needed, then control.
+"""start.py is only the sequencing: calibrate, then control.
 
 The wizard and the control loop have their own tests. What matters here is the
-order, that a saved profile skips the wizard, that a cancelled wizard never
+order, that measuring is the default even when an old profile.json exists, that
+--use-saved is the only way to skip the wizard, that a cancelled wizard never
 starts controlling, and that a simulated run never touches the pointer.
 """
 from __future__ import annotations
@@ -13,13 +14,15 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from calibrate_profile import Profile, save_profile
+from calibration_math import TremorProfile
 from start import run_sequence
 
 
 class _Args:
-    def __init__(self, profile, recalibrate=False, simulate=False):
+    def __init__(self, profile, use_saved=False, save=False, simulate=False):
         self.profile = profile
-        self.recalibrate = recalibrate
+        self.use_saved = use_saved
+        self.save = save
         self.simulate = simulate
         self.camera = 0
         self.width = 1280
@@ -30,8 +33,10 @@ class _Args:
         self.no_pointer_test = False
 
 
-def _profile():
-    return Profile.from_measurement(palm=0.04, jitter_px=2.4, distance_ft=10.0)
+def _profile(tremor_hz=0.0):
+    return Profile.from_measurement(palm=0.04, jitter_px=2.4, distance_ft=10.0,
+                                    tremor=TremorProfile(freq_hz=tremor_hz,
+                                                         amplitude_px=2.4))
 
 
 def test_a_fresh_start_calibrates_first_and_then_controls():
@@ -52,7 +57,28 @@ def test_a_fresh_start_calibrates_first_and_then_controls():
     assert order == ["calibrate", ("control", profile.jitter_score)]
 
 
-def test_a_saved_profile_skips_the_wizard():
+def test_a_saved_profile_never_replaces_measuring_this_hand():
+    """The point of the branch: today's hand, not the one measured last week."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = save_profile(_profile(), os.path.join(tmp, "profile.json"))
+        order = []
+        fresh = _profile(tremor_hz=5.0)
+
+        def calibrate(_args):
+            order.append("calibrate")
+            return fresh
+
+        def control(_args, prof):
+            order.append(("control", prof.tremor_hz))
+            return 0
+
+        code = run_sequence(_Args(path), calibrate, control)
+
+    assert code == 0
+    assert order == ["calibrate", ("control", 5.0)]
+
+
+def test_use_saved_is_the_only_way_to_skip_the_wizard():
     with tempfile.TemporaryDirectory() as tmp:
         path = save_profile(_profile(), os.path.join(tmp, "profile.json"))
         order = []
@@ -65,19 +91,18 @@ def test_a_saved_profile_skips_the_wizard():
             order.append("control")
             return 0
 
-        code = run_sequence(_Args(path), calibrate, control)
+        code = run_sequence(_Args(path, use_saved=True), calibrate, control)
 
     assert code == 0
     assert order == ["control"]
 
 
-def test_recalibrate_forces_the_wizard_even_with_a_saved_profile():
+def test_use_saved_with_no_file_on_disk_still_measures():
     order = []
-    with tempfile.TemporaryDirectory() as tmp:
-        path = save_profile(_profile(), os.path.join(tmp, "profile.json"))
-        code = run_sequence(_Args(path, recalibrate=True),
-                            lambda _a: (order.append("calibrate"), _profile())[1],
-                            lambda _a, _p: (order.append("control"), 0)[1])
+    code = run_sequence(_Args("/nowhere/profile.json", use_saved=True),
+                        lambda _a: (order.append("calibrate"), _profile())[1],
+                        lambda _a, _p: (order.append("control"), 0)[1],
+                        exists=lambda _p: False)
     assert code == 0
     assert order == ["calibrate", "control"]
 

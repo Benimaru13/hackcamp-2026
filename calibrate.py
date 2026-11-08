@@ -11,9 +11,10 @@ so you can stand back and keep your hands in the air for the whole thing.
     2. hold still for 4 s      -- how much your hand shakes (the jitter score)
     3. keep pointing for 4 s   -- how big your hand looks from here (reference)
 
-It writes profile.json next to this file. `python start.py` runs this wizard when
-no profile exists yet, and drops straight into controlling the computer when it
-finishes.
+It writes profile.json next to this file unless --no-save is given. `python
+start.py` runs this wizard on every start and drops straight into controlling the
+computer when it finishes, keeping the measurement in memory so no file has to
+exist for the calibrated run to be the real one.
 
 The screen keeps the reading of the web mock: near-black canvas, one teal accent,
 a status panel listing the three steps with a single large instruction, and a
@@ -245,8 +246,14 @@ def render_done(image, profile):
 
 # ------------------------------------------------------------------ wizard
 def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
-                    preview=True, width=1280, height=720, distance_m=3.0):
-    """Run the wizard, save the profile, and return it (None if cancelled)."""
+                    preview=True, width=1280, height=720, distance_m=3.0,
+                    save=True):
+    """Run the wizard and return the profile (None if cancelled).
+
+    `save=False` keeps the measurement in memory only: start.py measures on
+    every run and hands the profile straight to the tracker, so writing a file
+    is a convenience (--save), never a requirement.
+    """
     src = _Sim(distance_m) if simulate else _Camera(camera, model, width, height)
     show = preview and not simulate
     cfg = Config()
@@ -334,10 +341,14 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
         distance_ft = dist_cm / 30.48 if dist_cm > 0 else 10.0
         profile = Profile.from_measurement(palm=palm, jitter_px=meter.rms,
                                            distance_ft=distance_ft, tremor=tremor)
-        save_profile(profile, out_path)
         print(f"[3/3] reference hand size {palm * 100:.2f}% of frame at "
               f"{distance_ft:.1f} ft")
-        print(f"\nSaved {out_path}\n  {profile.summary()}")
+        if save:
+            save_profile(profile, out_path)
+            print(f"\nSaved {out_path}\n  {profile.summary()}")
+        else:
+            print(f"\nMeasured, not written to disk ('--save' keeps it)\n"
+                  f"  {profile.summary()}")
 
         if show and last_image is not None:
             for _ in range(90):          # hold the card about 1.8 s
@@ -358,6 +369,10 @@ def main(argv=None):
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--out", default=DEFAULT_PATH)
+    ap.add_argument("--save", dest="save", action="store_true", default=True,
+                    help="keep the measurement in profile.json (this is the default)")
+    ap.add_argument("--no-save", dest="save", action="store_false",
+                    help="measure without writing anything to disk")
     ap.add_argument("--no-preview", action="store_true")
     ap.add_argument("--simulate", action="store_true",
                     help="synthetic hand, no camera (rehearse or test)")
@@ -368,7 +383,7 @@ def main(argv=None):
                            simulate=args.simulate, out_path=args.out,
                            preview=not args.no_preview,
                            width=args.width, height=args.height,
-                           distance_m=args.distance)
+                           distance_m=args.distance, save=args.save)
     return 0 if prof else 1
 
 

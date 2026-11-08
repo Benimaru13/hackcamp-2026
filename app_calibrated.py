@@ -184,7 +184,8 @@ def pointer_test(pyautogui, dry_run=False):
     return False
 
 
-def main(argv=None):
+def main(argv=None, profile=None):
+    """`profile` lets start.py hand over a measurement made seconds ago."""
     ap = argparse.ArgumentParser(description="AirTrack: gesture control for your computer")
     ap.add_argument("--camera", type=int, default=0)
     ap.add_argument("--width", type=int, default=1280)
@@ -239,8 +240,11 @@ def main(argv=None):
     from calibrate_profile import DEFAULT_PATH, apply_to_config, load_profile
     from calibration_math import cursor_ring_px, distance_ratio
     profile_path = args.profile or DEFAULT_PATH
-    profile = None
-    if os.path.exists(profile_path):
+    if profile is not None:
+        # Passed in by start.py: measured on this run, so nothing is on disk.
+        apply_to_config(cfg, profile)
+        print(f"Calibrated this run: {profile.summary()}")
+    elif os.path.exists(profile_path):
         try:
             profile = load_profile(profile_path)
             apply_to_config(cfg, profile)

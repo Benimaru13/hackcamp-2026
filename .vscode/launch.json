@@ -15,17 +15,21 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/start.py",
-      "args": ["--dry-run"],
+      "args": [
+        "--dry-run"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false
     },
     {
-      "name": "AirTrack: recalibrate",
+      "name": "AirTrack: reuse saved calibration (no measuring)",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/start.py",
-      "args": ["--recalibrate"],
+      "args": [
+        "--use-saved"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false
@@ -35,7 +39,9 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/start.py",
-      "args": ["--simulate"],
+      "args": [
+        "--simulate"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false
