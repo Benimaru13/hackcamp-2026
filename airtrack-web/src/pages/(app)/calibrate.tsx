@@ -52,7 +52,17 @@ export default function CalibratePage() {
   const [progress, setProgress] = useState(0)
   const [handSeen, setHandSeen] = useState(false)
   const [simulate, setSimulate] = useState(false)
-  const [name, setName] = useState('My profile')
+  // Named from the clock on mount rather than typed: every control in this
+  // wizard is a `[data-air-target]`, so a text field would be the one thing a
+  // keyboard-free user could not get past. Renaming is a later, optional edit.
+  const [profileName] = useState(() => {
+    const time = new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    return `Profile · ${time}`
+  })
   const [distanceFt, setDistanceFt] = useState(DEFAULT_PROFILE.referenceDistanceFt)
   const [clickMode, setClickMode] = useState<ClickMode>('dwell')
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'error'>('idle')
@@ -190,7 +200,7 @@ export default function CalibratePage() {
 
   const profileDraft = () =>
     buildProfile({
-      name,
+      name: profileName,
       bounds: measured.bounds ?? DEFAULT_PROFILE.bounds,
       referenceSpan: measured.span ?? DEFAULT_PROFILE.referenceSpan,
       jitterRmsPx: measured.jitterRmsPx ?? 0,
@@ -416,16 +426,13 @@ export default function CalibratePage() {
 
           {step === 4 ? (
             <Card title="Save this profile">
-              <label className="block text-xs text-muted-foreground" htmlFor="profile-name">
-                Profile name
-              </label>
-              <input
-                id="profile-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                maxLength={60}
-                className="mt-1 h-10 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none focus:border-ring"
-              />
+              <div>
+                <p className="text-xs text-muted-foreground">Profile name</p>
+                <p className="mt-1 text-sm font-medium text-foreground">{profileName}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Named automatically — nothing in this wizard needs a keyboard.
+                </p>
+              </div>
 
               <div className="mt-4">
                 <p className="text-xs text-muted-foreground">Your usual distance (for the readout)</p>
