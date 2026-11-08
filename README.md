@@ -24,6 +24,7 @@ python app.py                # run it; raise an open palm to take control
 | Arming / releasing control | working: raised open palm to arm, fist to release |
 | State feedback | full-screen click-through halo (PyObjC, macOS) + HUD in the preview window |
 | Aiming reticle | grows with camera distance while the pointing hand is live (HUD only) |
+| Preview zoom | the window shows the auto-zoom crop, so the feed visibly zooms and pans with your hand |
 | Real system cursor + click | PyAutoGUI (macOS + Windows) |
 | Two-finger vertical, held | scrolls up/down, one wheel step every 0.15 s after a 0.2 s hold, ACTIVE only |
 | Two fingers pointed left/right, held 0.55 s | sends ctrl+← / ctrl+→ (previous / next space), then rests 1 s, ACTIVE only |
@@ -225,7 +226,11 @@ Three separate problems, solved separately:
    tried at full upscale, which is how a hand too small for a whole-frame detection
    gets acquired in the first place; the whole frame stays as the last resort.
    Landmarks are mapped back to full-frame coordinates, so the mirrored preview and
-   the cursor mapping behave exactly as before. `python simulate.py focus` prints
+   the cursor mapping behave exactly as before. The preview window then *shows* that
+   crop, blown up to the window (`view_rect()` in `zoom.py`), so the picture on
+   screen visibly zooms in and pans with your hand like a camera focusing on it. The
+   window keeps the frame's 16:9 shape, so the picture is never stretched, and it
+   only ever zooms in: at 1 m it is already most of the frame. `python simulate.py focus` prints
    the numbers, and the HUD shows `zoom: 3.9x  hand 55% of crop` next to the crop
    rectangle -- literally what the model is looking at.
 2. **Distance changes sensitivity.** Every position and threshold is converted to
@@ -271,7 +276,7 @@ travel before any of it counts as a move.
 ## Verifying it
 
 ```bash
-python -m unittest discover -s tests -v   # 87 tests, no camera needed
+python -m unittest discover -s tests -v   # 93 tests, no camera needed
 python simulate.py                        # measured behaviour + a tuning table
 python simulate.py gestures               # palm → point → hover click → fist → palm
 python simulate.py switch                 # two-finger switch: hold, then the 1 s rest
@@ -328,6 +333,11 @@ to the direction you point, flip the sign of `pyautogui.scroll(...)` in `app.py`
 (one line). The HUD now shows the direction the app currently reads
 (`scroll: up`/`down`), which is the fastest way to tell a detection problem from a
 sign problem.
+- **The preview zoom is a display crop, not optical zoom.** It enlarges pixels, so
+  from 4 m the picture is softer than from 1 m — the lens and sensor do not change,
+  which is why the detector crop is upscaled for the model separately. The HUD is
+  drawn on top at a constant size, and the reticle is deliberately not magnified
+  with the picture.
 - **The magnifier is the HUD reticle, not the system pointer.** macOS owns the
   pointer and it cannot be resized; what grows with distance is the ring drawn at
   the fingertip in the preview -- `cursor_radius_px()` in `gesture_cursor.py`,

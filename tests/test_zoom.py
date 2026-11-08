@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fake_hand import FakeHand                                  # noqa: E402
 from zoom import (FILL, MAX_UPSCALE, MIN_CROP, TARGET_SIDE, Rect,   # noqa: E402
                   box_of, hand_fill, hand_side, model_hand_share, plan_crop,
-                  scan_tiles, upscale_for)
+                  scan_tiles, upscale_for, view_rect)
 
 
 class FocusCropTests(unittest.TestCase):
@@ -154,6 +154,57 @@ class ScanTileTests(unittest.TestCase):
         in_tile = model_hand_share(box, tile)
         in_frame = hand_side(box) * upscale_for(self.FRAME_H) / TARGET_SIDE
         self.assertGreater(in_tile, 1.5 * in_frame)
+
+
+class PreviewViewTests(unittest.TestCase):
+    """The preview shows the focus crop blown up to the window, so the feed looks
+    like a camera zooming. Two things it must not do: stretch the picture (a square
+    crop in a 16:9 window looks like a lens fault) or show anything outside the
+    frame."""
+
+    FRAME_W, FRAME_H = 1280, 720
+
+    def view(self, cx, cy, side):
+        return view_rect((cx, cy), side, self.FRAME_W, self.FRAME_H)
+
+    def test_keeps_the_frame_aspect_ratio(self):
+        for side in (100.0, 133.0, 398.0):
+            v = self.view(640, 360, side)
+            self.assertAlmostEqual(v.w / v.h, self.FRAME_W / self.FRAME_H, places=6)
+
+    def test_shows_at_least_the_requested_size(self):
+        v = self.view(640, 360, 133.0)
+        self.assertGreaterEqual(v.h, 133.0 - 1e-6)
+        self.assertGreaterEqual(v.w, 133.0 - 1e-6)
+
+    def test_centres_on_the_hand_when_there_is_room(self):
+        v = self.view(640, 360, 133.0)
+        self.assertAlmostEqual(v.center[0], 640, delta=1.0)
+        self.assertAlmostEqual(v.center[1], 360, delta=1.0)
+
+    def test_stays_inside_the_frame_at_the_corners(self):
+        for cx, cy, side in ((5, 5, 133.0), (1275, 715, 200.0),
+                             (1280, 0, 300.0), (0, 720, 300.0)):
+            v = self.view(cx, cy, side)
+            self.assertGreaterEqual(v.x0, 0.0, (cx, cy))
+            self.assertGreaterEqual(v.y0, 0.0, (cx, cy))
+            self.assertLessEqual(v.x1, self.FRAME_W + 1e-6, (cx, cy))
+            self.assertLessEqual(v.y1, self.FRAME_H + 1e-6, (cx, cy))
+            self.assertGreater(v.w, 0.0)
+            self.assertGreater(v.h, 0.0)
+
+    def test_a_very_near_hand_falls_back_to_the_whole_frame(self):
+        """A 16:9 window that tight would be wider than the sensor: zooming out past
+        the frame is not possible, so it shows everything (factor 1.0)."""
+        v = self.view(640, 360, 2000.0)
+        self.assertAlmostEqual(v.w, self.FRAME_W)
+        self.assertAlmostEqual(v.h, self.FRAME_H)
+
+    def test_the_preview_zooms_more_the_further_you_stand(self):
+        near = self.FRAME_W / self.view(640, 360, 398.0).w     # ~1 m
+        far = self.FRAME_W / self.view(640, 360, 100.0).w      # ~4 m
+        self.assertAlmostEqual(far / near, 398.0 / 100.0, delta=0.2)
+        self.assertGreater(far, 4.0, "4 m should be a strong zoom")
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ import numpy as np
 from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
                             SwitchDetector, cursor_radius_px)
 from voice import Voice
+from zoom import view_rect
 
 WIN = "AirTrack"
 COLORS = {
@@ -81,25 +82,46 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
     gesture_cursor.py). Keep the two in sync or the preview lies about which
     way your hand is pushing the cursor."""
     h, w = frame.shape[:2]
+
+    # The preview shows the auto-zoom crop, blown up to the window, so the feed
+    # visibly zooms in and pans with the hand like a camera focusing on it. This is
+    # pure drawing: the detector already works in full-frame coordinates, so only
+    # what is displayed (and the map from frame pixels to display pixels) changes.
+    fw = float(fr.width or w)
+    fh = float(getattr(fr, "height", 0) or h)
+    view = None
+    want = extra.get("view")                 # (cx, cy, side) in frame px, smoothed
+    if want is not None:
+        v = view_rect(want[:2], want[2], fw, fh)
+        x0, y0, x1, y1 = v.ints()
+        if x1 - x0 > 1 and y1 - y0 > 1 and v.w < fw:
+            frame = cv2.resize(frame[y0:y1, x0:x1], (w, h),
+                               interpolation=cv2.INTER_LINEAR)
+            view = v
     if mirror:
         frame = cv2.flip(frame, 1)
 
-    def X(x_norm):                     # normalized frame x -> displayed x
-        x_px = int(x_norm * w)
-        return w - 1 - x_px if mirror else x_px
-
-    # Frame PIXELS -> displayed pixels. tracker.py reports boxes and the focus crop
-    # in frame pixels, and the preview window can be a different size, so scale
-    # first: treating a pixel box as normalized drew it thousands of px off-screen.
-    sx = w / float(fr.width or w)
-    sy = h / float(getattr(fr, "height", 0) or h)
+    # Frame PIXELS -> displayed pixels, through the view window. tracker.py reports
+    # boxes in frame pixels and the window can be a different size, so scale first:
+    # treating a pixel box as normalized drew it thousands of px off-screen.
+    vx = view.x0 if view is not None else 0.0
+    vy = view.y0 if view is not None else 0.0
+    vw = view.w if view is not None else fw
+    vh = view.h if view is not None else fh
+    sx, sy = w / max(vw, 1.0), h / max(vh, 1.0)
 
     def XPx(px):
-        x_px = int(px * sx)
+        x_px = int((px - vx) * sx)
         return w - 1 - x_px if mirror else x_px
 
     def YPx(py):
-        return int(py * sy)
+        return int((py - vy) * sy)
+
+    def X(x_norm):                     # normalized frame x -> displayed x
+        return XPx(x_norm * fw)
+
+    def Y(y_norm):                     # normalized frame y -> displayed y
+        return YPx(y_norm * fh)
 
     pulse = 0.75 + 0.25 * np.sin(time.monotonic() * 5.0)
     if halo:   # fallback only: with the full-screen overlay the preview stays clean
@@ -111,25 +133,20 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
         cv2.rectangle(frame, (min(xa, xb), YPx(fr.box[1])), (max(xa, xb), YPx(fr.box[3])),
                       COLORS[out.state], 1, cv2.LINE_AA)
 
-    # What the model actually sees: the auto-zoom crop that follows the hand.
-    crop = getattr(fr, "crop", None)
-    if crop is not None and getattr(fr, "focused", False):
-        xa, xb = XPx(crop.x0), XPx(crop.x1)
-        cv2.rectangle(frame, (min(xa, xb), YPx(crop.y0)), (max(xa, xb), YPx(crop.y1)),
-                      (230, 200, 60), 1, cv2.LINE_AA)
-
     if fr.landmarks:
         for p in fr.landmarks:
-            cv2.circle(frame, (X(p.x), int(p.y * h)), 2,
+            cv2.circle(frame, (X(p.x), Y(p.y)), 2,
                        (255, 255, 255), -1, cv2.LINE_AA)
         tip = fr.landmarks[8]
-        cx, cy = X(tip.x), int(tip.y * h)
+        cx, cy = X(tip.x), Y(tip.y)
         r_px = extra.get("cursor_px") or 0
         if r_px:
             # Aiming reticle: the radius comes from gesture_cursor.cursor_radius_px,
             # so the guide grows with the camera distance and stays visible from
             # across the room. Only drawn while the pointing hand is live.
-            r = int(min(max(r_px, 8.0), h * 0.22))
+            # r_px is measured in frame pixels, so convert it to display pixels:
+            # otherwise the zoomed preview would magnify the reticle as well.
+            r = int(min(max(r_px * (w / fw), 8.0), h * 0.22))
             cv2.circle(frame, (cx, cy), r, COLORS[out.state], 2, cv2.LINE_AA)
             for ang in (0, 90, 180, 270):
                 a = math.radians(ang)
@@ -147,7 +164,7 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
         switch_progress = float(extra.get("switch", 0.0))
         if switch_progress > 0.0:
             a, b = fr.landmarks[8], fr.landmarks[12]
-            _arc(frame, (X((a.x + b.x) / 2.0), int((a.y + b.y) / 2.0 * h)), 22,
+            _arc(frame, (X((a.x + b.x) / 2.0), Y((a.y + b.y) / 2.0)), 22,
                  switch_progress, (0, 220, 255), 3)
 
     label = {"armed": "ARMED  (watching)", "active": "ACTIVE  (controlling)",
@@ -159,6 +176,7 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
             f"hand: {out.distance_cm / 30.48:.1f} ft / {out.distance_cm:.0f} cm"
             if out.distance_cm else "hand: -",
             (f"zoom: {fr.zoom:.1f}x  hand {fr.fill * 100:.0f}% of crop"
+             f"  preview {fw / max(vw, 1.0):.1f}x"
              if fr.focused else "zoom: - (whole frame)"),
             f"{fr.fps:.0f} fps",
             "switch: two fingers left/right, hold 0.55 s, then 1 s rest",
@@ -279,6 +297,7 @@ def main(argv=None):
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
     scroll_dir = None
     reticle = None                 # smoothed aiming-reticle radius
+    view = None                    # smoothed (cx, cy, side) of the preview zoom
     
     try:
         while True:
@@ -355,6 +374,22 @@ def main(argv=None):
             else:
                 reticle = None
 
+            # Preview zoom: follow the detector's focus crop, smoothed so the
+            # picture pans like a camera instead of snapping when the crop is
+            # re-planned. The size follows more slowly than the position, so the
+            # zoom does not pump as the distance estimate breathes.
+            if fr.focused and fr.crop is not None:
+                wx, wy = fr.crop.center
+                want_view = (wx, wy, fr.crop.side)
+                if view is None:
+                    view = want_view
+                else:
+                    view = (view[0] + 0.18 * (want_view[0] - view[0]),
+                            view[1] + 0.18 * (want_view[1] - view[1]),
+                            view[2] + 0.10 * (want_view[2] - view[2]))
+            else:
+                view = None
+
             if not args.dry_run and pyautogui is not None:
                 try:
                     if out.action in ("move", "click"):
@@ -375,6 +410,7 @@ def main(argv=None):
                 frame = draw_hud(fr.image, out, fr, {
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
                     "switch": switch_progress,
+                    "view": view,
                     "scroll": scroll_det.direction or "-",
                     "cursor_px": cursor_px,
                     "click": "hold still", "dry": args.dry_run},

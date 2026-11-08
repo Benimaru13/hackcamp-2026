@@ -173,7 +173,7 @@ def scenario_focus(frame_w=1280, frame_h=720):
     is what decides whether the detector can find the hand at all, and the crop
     keeps it constant instead of letting it shrink with distance."""
     from zoom import (TARGET_SIDE, box_of, hand_side, model_hand_share,
-                      plan_crop, scan_tiles, upscale_for)
+                      plan_crop, scan_tiles, upscale_for, view_rect)
     tiles = scan_tiles(frame_w, frame_h)
     tile_k = min(upscale_for(t.short) for t in tiles)
     rows = []
@@ -190,6 +190,7 @@ def scenario_focus(frame_w=1280, frame_h=720):
             "focus": model_hand_share(box, rect),
             "whole": whole,
             "tile": hand_side(box) * tile_k / TARGET_SIDE,
+            "preview": frame_w / view_rect(rect.center, rect.side, frame_w, frame_h).w,
         })
     return rows
 
@@ -288,7 +289,8 @@ def main(argv):
             print(f"  {r['distance_m']:.1f} m: hand {r['hand_px']:4.0f} px -> crop "
                   f"{r['crop_px']:4.0f} px at {r['zoom']:.1f}x: fills "
                   f"{r['focus'] * 100:3.0f}%  (whole-frame scan "
-                  f"{r['whole'] * 100:3.0f}%, one scan tile {r['tile'] * 100:3.0f}%)")
+                  f"{r['whole'] * 100:3.0f}%, one scan tile {r['tile'] * 100:3.0f}%), "
+                  f"preview {r['preview']:.1f}x")
         print()
 
     if which in ("all", "cursor"):

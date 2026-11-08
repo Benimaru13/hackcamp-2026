@@ -18,6 +18,9 @@ Two jobs, two entry points:
                       so the detector keeps seeing the hand in the same place,
                       which is what its own tracking step needs), and re-sized only
                       when the hand changes distance appreciably.
+  * `view_rect()`   -- show. The window for the preview: the follower crop, blown
+                      up to the preview window, so the feed on screen visibly zooms
+                      and pans with the hand like a camera.
   * `scan_tiles()` -- acquire. While nothing is tracked there is no hand to crop
                       around, so the frame is cut into overlapping tiles and one
                       tile is tried per frame: a tile is upscaled much harder than
@@ -167,6 +170,34 @@ def model_hand_share(box, crop, target_side=TARGET_SIDE, max_upscale=MAX_UPSCALE
     This is the number that decides how findable the hand is. Uses the SHORT side
     of the crop, because that is what tracker._resize_for_model normalises on."""
     return hand_side(box) * upscale_for(crop.short, target_side, max_upscale) / target_side
+
+
+def view_rect(center, side, frame_w, frame_h):
+    """The part of the frame the PREVIEW should show: a window of the frame's own
+    aspect ratio, at least `side` tall, around `center`, slid inside the frame.
+
+    This is what makes the preview look like a real zoom. The detector's crop is
+    square, and stretching a square to a 16:9 window looks like a lens fault rather
+    than a zoom, so the window takes the frame's aspect ratio and its height is the
+    crop side (the hand therefore fills the same share of the window as of the
+    crop). Near an edge it slides instead of shrinking, and if the hand is so close
+    that such a window would be wider than the frame, it returns the whole frame --
+    zooming out past the sensor is not possible.
+    """
+    frame_w, frame_h = max(float(frame_w), 1.0), max(float(frame_h), 1.0)
+    aspect = frame_w / frame_h
+    vh = max(float(side or 0.0), 1.0)
+    vw = vh * aspect
+    if vw > frame_w:
+        vw = frame_w
+        vh = vw / aspect
+    if vh > frame_h:
+        vh = frame_h
+        vw = vh * aspect
+    cx, cy = center if center else (frame_w / 2.0, frame_h / 2.0)
+    x0 = min(max(float(cx) - vw / 2.0, 0.0), frame_w - vw)
+    y0 = min(max(float(cy) - vh / 2.0, 0.0), frame_h - vh)
+    return Rect(x0, y0, x0 + vw, y0 + vh)
 
 
 def scan_tiles(frame_w, frame_h, cols=2, rows=2, overlap=0.25):
