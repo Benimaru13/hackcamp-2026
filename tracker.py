@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -44,14 +45,49 @@ DEFAULT_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 
 def ensure_model(path=DEFAULT_MODEL, url=MODEL_URL, quiet=False):
-    """Download the 7.8 MB hand landmarker once, if it is not there yet."""
+    """Download the 7.8 MB hand landmarker once, showing how far it has got.
+
+    A silent ``urlretrieve`` on a slow link is indistinguishable from a hang --
+    that is the "python start.py does nothing for a minute" report. This prints
+    the megabytes as they arrive, and only moves the finished file into place, so
+    an interrupted download cannot leave half a model behind for the next run.
+    """
     if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
         return path
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     if not quiet:
-        print(f"[tracker] downloading hand model once -> {path}")
+        print(f"[tracker] hand model missing -> downloading once to {path}",
+              flush=True)
     tmp = path + ".part"
-    urllib.request.urlretrieve(url, tmp)
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(url, timeout=30) as resp, open(tmp, "wb") as fh:
+            total = int(resp.headers.get("Content-Length") or 0)
+            got, shown = 0, -1
+            while True:
+                chunk = resp.read(1 << 16)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                got += len(chunk)
+                pct = (got * 100 // total) if total else 0
+                if not quiet and pct // 20 != shown // 20:
+                    shown = pct
+                    total_txt = f"{total / 1e6:.1f}" if total else "?"
+                    print(f"\r[tracker] model {got / 1e6:.1f}/{total_txt} MB "
+                          f"({pct}%)", end="", flush=True)
+    except Exception as exc:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"could not download the hand model from {url} ({exc}). Check the "
+            f"connection, or copy hand_landmarker.task to {path} by hand -- an "
+            f"existing file is used as-is.") from exc
+    if not quiet:
+        print(f"\r[tracker] model ready in {time.monotonic() - started:.1f} s"
+              + " " * 24)
     os.replace(tmp, path)
     return path
 
@@ -112,7 +148,17 @@ class HandTracker:
         self.fill = fill              # wanted hand side / crop side
         self.deadband = deadband      # keep the crop while the hand is this central
 
-        self.cap = cv2.VideoCapture(camera)
+        # Windows: the default MSMF backend can stall for seconds before the
+        # first frame comes back. DirectShow opens in well under a second, so try
+        # it first and fall back to the default backend if it refuses.
+        opened = time.monotonic()
+        if sys.platform == "win32" and hasattr(cv2, "CAP_DSHOW"):
+            self.cap = cv2.VideoCapture(camera, cv2.CAP_DSHOW)
+            if not self.cap.isOpened():
+                self.cap.release()
+                self.cap = cv2.VideoCapture(camera)
+        else:
+            self.cap = cv2.VideoCapture(camera)
         if not self.cap.isOpened():
             raise RuntimeError(
                 f"could not open camera {camera}. Close other apps using it, or "
@@ -122,6 +168,8 @@ class HandTracker:
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # low latency: drop stale frames
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
+        print(f"[tracker] camera {self.width}x{self.height} opened in "
+              f"{time.monotonic() - opened:.1f} s", flush=True)
 
         options = vision.HandLandmarkerOptions(
             base_options=mp_python.BaseOptions(model_asset_path=model),
@@ -131,7 +179,10 @@ class HandTracker:
             min_hand_presence_confidence=min_presence,
             min_tracking_confidence=min_tracking,
         )
+        t_model = time.monotonic()
         self.landmarker = vision.HandLandmarker.create_from_options(options)
+        print(f"[tracker] hand model loaded in "
+              f"{time.monotonic() - t_model:.1f} s", flush=True)
 
         self._box = None          # float box in frame px, smoothed
         self._crop = None         # Rect of the focus crop that last worked

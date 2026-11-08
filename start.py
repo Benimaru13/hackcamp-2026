@@ -23,7 +23,10 @@ import os
 import sys
 from voice import Voice
 
-import app_calibrated as control_app
+# app_calibrated drags in cv2 and the whole control loop. Importing it at this
+# point made every start pay for it before the wizard had drawn anything, so
+# it is bound on first use -- kept as a module attribute so tests can patch it.
+control_app = None
 import calibrate as wizard
 from calibrate_profile import DEFAULT_PATH, load_profile
 
@@ -35,6 +38,8 @@ _HANDOFF = {}
 
 
 def _calibrate(args):
+    print("AirTrack: opening the camera and loading the hand model "
+          "(a first run downloads 7.8 MB once)...", flush=True)
     source = wizard.make_source(camera=args.camera, simulate=args.simulate,
                                 width=args.width, height=args.height)
     profile = wizard.run_calibration(camera=args.camera, simulate=args.simulate,
@@ -50,6 +55,10 @@ def _calibrate(args):
 
 
 def _control(args, profile):
+    global control_app
+    if control_app is None:
+        import app_calibrated as _app
+        control_app = _app
     argv = ["--profile", args.profile]
     if args.dry_run:
         argv.append("--dry-run")
