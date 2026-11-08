@@ -84,8 +84,11 @@ class Frame:
     box: tuple | None = None             # (x0, y0, x1, y1) in frame pixels
     zoom: float = 1.0                    # crop upscale actually used
     crop: Rect | None = None             # the crop the model was given, frame px
+    focus_crop: Rect | None = None       # crop BUILT around the hand (not a scan tile)
     fill: float = 0.0                    # hand side / crop side (0 = not cropped)
     focused: bool = False                # True when the detection used a crop
+    # (focus_crop is the one the preview may zoom to; scan tiles and whole-frame
+    # detections leave it None)
     fps: float = 0.0
     width: int = 0
     height: int = 0
@@ -198,7 +201,7 @@ class HandTracker:
 
         landmarks = box = None
         zoom, fill = 1.0, 0.0
-        focused, crop, used = False, None, None
+        focused, crop, focus_crop, used = False, None, None, None
         attempts = []            # (rect, kind): "focus", "scan" or "full"
 
         # 1) focus: crop around the last hand, sized so the hand fills ~55% of the
@@ -243,6 +246,10 @@ class HandTracker:
             used = kind
             focused = kind != "full"
             crop = rect if focused else None
+            # The preview follows ONLY a crop built around the hand. A scan tile is
+            # just a place the hand happened to be found, and easing the window to
+            # one and then to the real crop a frame later made the preview lurch.
+            focus_crop = rect if used == "focus" else None
             zoom = k if focused else 1.0
             fill = hand_fill(Rect(*box), rect) if focused else 0.0
             break
@@ -265,7 +272,7 @@ class HandTracker:
 
         return Frame(image=frame, landmarks=landmarks, box=box, zoom=zoom,
                      fps=self._fps, width=frame_w, height=frame_h,
-                     crop=crop, fill=fill, focused=focused)
+                     crop=crop, focus_crop=focus_crop, fill=fill, focused=focused)
 
     def close(self):
         try:

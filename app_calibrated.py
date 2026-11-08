@@ -32,7 +32,7 @@ import numpy as np
 from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
                             SwitchDetector, cursor_radius_px, hand_scale)
 from voice import Voice
-from zoom import view_rect
+from zoom import ViewFollow, view_rect
 
 WIN = "AirTrack (calibrated)"
 RING_BASE_PX = 18.0   # ring radius at the distance you calibrated at (frame px)
@@ -391,7 +391,9 @@ def main(argv=None, profile=None, tracker=None):
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
     scroll_dir = None
     reticle = None                 # smoothed aiming-reticle radius
-    view = None                    # smoothed (cx, cy, side) of the preview zoom
+    follow = ViewFollow()          # eased preview zoom (Centre Stage style)
+    view = None                    # window the preview showed last frame
+    view_last = None               # monotonic time of the last eased step
     
     try:
         while True:
@@ -475,21 +477,18 @@ def main(argv=None, profile=None, tracker=None):
             else:
                 reticle = None
 
-            # Preview zoom: follow the detector's focus crop, smoothed so the
-            # picture pans like a camera instead of snapping when the crop is
-            # re-planned. The size follows more slowly than the position, so the
-            # zoom does not pump as the distance estimate breathes.
-            if fr.focused and fr.crop is not None:
-                wx, wy = fr.crop.center
-                want_view = (wx, wy, fr.crop.side)
-                if view is None:
-                    view = want_view
-                else:
-                    view = (view[0] + 0.18 * (want_view[0] - view[0]),
-                            view[1] + 0.18 * (want_view[1] - view[1]),
-                            view[2] + 0.10 * (want_view[2] - view[2]))
-            else:
-                view = None
+            # Preview zoom: the window is EASED to the hand like a camera on a
+            # gimbal (the Centre Stage feel) instead of being cut to it. It zooms
+            # in from the whole frame, glides when the hand moves and eases back
+            # out when the hand is lost. ViewFollow works in real time, so the pan
+            # looks the same on a 15 fps camera as on a 60 fps one, and only a
+            # crop built around the hand is ever a target -- following a scan tile
+            # whipped the picture across the frame before settling on the hand.
+            view_dt = 0.0 if view_last is None else current_time - view_last
+            view_last = current_time
+            view = follow.update(fr.focus_crop,
+                                 float(fr.width or tracker.width),
+                                 float(fr.height or tracker.height), view_dt)
 
             if not args.dry_run and pyautogui is not None:
                 try:

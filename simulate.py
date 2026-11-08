@@ -11,7 +11,7 @@ matter for the 10-foot demo:
 
 Run:  python simulate.py            (all scenarios)
       python simulate.py still      (one scenario: still | move | tune | gestures |
-                                     switch | scroll | focus | cursor)
+                                     switch | scroll | focus | follow | cursor)
 """
 from __future__ import annotations
 
@@ -195,6 +195,35 @@ def scenario_focus(frame_w=1280, frame_h=720):
     return rows
 
 
+def scenario_follow(frame_w=1280, frame_h=720, fps=30.0):
+    """The preview window moving to the hand: the eased camera instead of a cut.
+
+    A 160 px crop appears at the left edge, moves to the right edge at 1.5 s (the
+    detector re-planned around a hand that moved), and is lost at 2.4 s. Samples
+    every 0.1 s, plus the largest single-frame pan -- the number that reads as a
+    jump when it is large.
+    """
+    from zoom import Rect, ViewFollow, view_rect
+    dt = 1.0 / fps
+    follow = ViewFollow()
+    left = Rect(240.0, 280.0, 400.0, 440.0)
+    right = Rect(880.0, 280.0, 1040.0, 440.0)
+    every = max(1, int(round(0.1 * fps)))
+    samples, max_step, prev = [], 0.0, None
+    for i in range(int(3.0 * fps)):
+        t = i * dt
+        crop = None if t >= 2.4 else (left if t < 1.5 else right)
+        view = follow.update(crop, frame_w, frame_h, dt)
+        rect = view_rect(view[:2], view[2], frame_w, frame_h) if view else None
+        cx = rect.center[0] if rect is not None else None
+        if cx is not None and prev is not None:
+            max_step = max(max_step, abs(cx - prev))
+        prev = cx
+        if i % every == 0:
+            samples.append((t, cx, None if rect is None else rect.w, view is None))
+    return samples, max_step
+
+
 def scenario_cursor():
     """Aiming reticle radius against camera distance (what the HUD draws with the
     pointing hand live)."""
@@ -292,6 +321,18 @@ def main(argv):
                   f"{r['whole'] * 100:3.0f}%, one scan tile {r['tile'] * 100:3.0f}%), "
                   f"preview {r['preview']:.1f}x")
         print()
+
+    if which in ("all", "follow"):
+        print("preview zoom easing at 1280x720 (window every 0.1 s; a cut would "
+              "cover the whole distance in one frame)")
+        samples, step = scenario_follow()
+        for t, cx, w, whole in samples:
+            if whole:
+                print(f"  {t:4.1f}s  whole frame")
+            else:
+                print(f"  {t:4.1f}s  side {w:4.0f} px  centre x {cx:4.0f}  "
+                      f"({1280.0 / w:.1f}x)")
+        print(f"  largest single-frame pan: {step:.1f} px\n")
 
     if which in ("all", "cursor"):
         print("aiming reticle radius vs distance (HUD, pointing hand, ACTIVE only)")

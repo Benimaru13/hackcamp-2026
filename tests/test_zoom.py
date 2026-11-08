@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fake_hand import FakeHand                                  # noqa: E402
 from zoom import (FILL, MAX_UPSCALE, MIN_CROP, TARGET_SIDE, Rect,   # noqa: E402
                   box_of, hand_fill, hand_side, model_hand_share, plan_crop,
-                  scan_tiles, upscale_for, view_rect)
+                  scan_tiles, upscale_for, view_rect, ViewFollow)
 
 
 class FocusCropTests(unittest.TestCase):
@@ -205,6 +205,88 @@ class PreviewViewTests(unittest.TestCase):
         far = self.FRAME_W / self.view(640, 360, 100.0).w      # ~4 m
         self.assertAlmostEqual(far / near, 398.0 / 100.0, delta=0.2)
         self.assertGreater(far, 4.0, "4 m should be a strong zoom")
+
+
+class ViewFollowTests(unittest.TestCase):
+    """The preview window has to move like a camera, not cut like a slideshow:
+    nothing on acquisition, nothing on a lost hand, and a pan that looks the same
+    at 15 fps as at 60 fps."""
+
+    FRAME_W, FRAME_H = 1280, 720
+    DT = 1.0 / 30.0
+
+    def crop(self, cx=320.0, cy=300.0, side=160.0):
+        return Rect(cx - side / 2.0, cy - side / 2.0, cx + side / 2.0, cy + side / 2.0)
+
+    def feed(self, follow, crop, seconds):
+        out = []
+        for _ in range(int(round(seconds / self.DT))):
+            out.append(follow.update(crop, self.FRAME_W, self.FRAME_H, self.DT))
+        return out
+
+    def test_the_first_frame_shows_the_whole_frame_instead_of_cutting(self):
+        view = ViewFollow().update(self.crop(), self.FRAME_W, self.FRAME_H, self.DT)
+        self.assertIsNotNone(view)
+        self.assertAlmostEqual(view[2], self.FRAME_H, delta=1.0)
+
+    def test_it_zooms_in_and_arrives_without_going_backwards(self):
+        follow = ViewFollow()
+        views = self.feed(follow, self.crop(), 2.0)
+        sides = [v[2] for v in views]
+        for before, after in zip(sides, sides[1:]):
+            self.assertLessEqual(after, before + 1e-6, "the zoom moved backwards")
+        self.assertAlmostEqual(sides[-1], 160.0, delta=2.0)
+        self.assertAlmostEqual(views[-1][0], 320.0, delta=2.0)
+        self.assertAlmostEqual(views[-1][1], 300.0, delta=2.0)
+
+    def test_a_pan_eases_and_never_overshoots(self):
+        follow = ViewFollow()
+        self.feed(follow, self.crop(cx=320.0), 1.0)
+        xs = [v[0] for v in self.feed(follow, self.crop(cx=900.0), 1.5)]
+        for before, after in zip(xs, xs[1:]):
+            self.assertGreaterEqual(after, before - 1e-6, "the pan overshot")
+        self.assertLessEqual(max(xs), 900.0 + 1e-6)
+        self.assertGreater(xs[0] - 320.0, 0.0)
+        self.assertLess(xs[0] - 320.0, 150.0, "the pan started at full speed")
+
+    def test_the_pan_looks_the_same_at_any_frame_rate(self):
+        crop = self.crop(cx=320.0)
+        slow, fast = ViewFollow(), ViewFollow()
+        for _ in range(30):                          # 1 s at 30 fps
+            a = slow.update(crop, self.FRAME_W, self.FRAME_H, 1 / 30.0)
+        for _ in range(60):                          # 1 s at 60 fps
+            b = fast.update(crop, self.FRAME_W, self.FRAME_H, 1 / 60.0)
+        self.assertAlmostEqual(a[2], b[2], delta=6.0)
+        self.assertAlmostEqual(a[0], b[0], delta=6.0)
+
+    def test_a_lost_hand_eases_back_out_instead_of_cutting(self):
+        follow = ViewFollow()
+        self.feed(follow, self.crop(cx=1100.0, side=120.0), 1.5)
+        zoomed = follow.state[2]
+        self.assertLess(zoomed, 200.0)
+
+        view, sides = None, []
+        for _ in range(180):                         # 6 s to get back out
+            view = follow.update(None, self.FRAME_W, self.FRAME_H, self.DT)
+            if view is None:
+                break
+            sides.append(view[2])
+        self.assertTrue(sides, "it cut straight back to the whole frame")
+        self.assertGreater(sides[0], zoomed - 1.0)
+        for before, after in zip(sides, sides[1:]):
+            self.assertGreaterEqual(after, before - 1e-6, "the zoom-out went backwards")
+        self.assertIsNone(view, "it has to end on the whole frame")
+        self.assertIsNone(follow.state)
+
+    def test_a_stalled_frame_does_not_teleport_the_window(self):
+        follow = ViewFollow()
+        crop = self.crop(cx=1000.0, side=120.0)
+        follow.update(crop, self.FRAME_W, self.FRAME_H, 0.0)
+        view = follow.update(crop, self.FRAME_W, self.FRAME_H, 2.0)   # a 2 s stall
+        self.assertGreater(view[2], 200.0, "a stall must not finish the zoom")
+
+    def test_no_crop_and_no_history_stays_on_the_whole_frame(self):
+        self.assertIsNone(ViewFollow().update(None, self.FRAME_W, self.FRAME_H, self.DT))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ import math
 import os
 import random
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -156,6 +157,36 @@ def test_profile_keys_match_the_tracker_config():
     assert cfg.arm_hold == pytest.approx(profile.arm_hold)
     hold = "swipe_hold" if hasattr(cfg, "swipe_hold") else "switch_hold"
     assert getattr(cfg, hold) == pytest.approx(profile.swipe_hold)
+
+
+def test_the_calibration_preview_flips_the_picture_with_the_dots():
+    """The wizard mapped the landmark dots as a mirror (x -> 1 - x) but left the
+    picture unflipped, so every dot landed on the opposite side of the frame: the
+    fingertip ring sat on the empty half of the image and the real hand had no
+    dots on it at all. Picture and dots have to be flipped together."""
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cv2")
+    import calibrate
+
+    h, w = 720, 1280
+    image = np.zeros((h, w, 3), np.uint8)
+    image[:, : w // 2] = 255                      # a bright LEFT half
+
+    lm = [SimpleNamespace(x=0.1, y=0.5, z=0.0) for _ in range(21)]
+    frame = calibrate.render(image, 1, 0.0, "hold still", {}, lm, mirror=True)
+
+    pw = max(300, min(int(w * 0.36), 430))
+    vw = w - pw                                   # the camera column
+
+    # The picture is flipped with the dots: the bright half is now on the right.
+    assert frame[h // 2, vw // 4].mean() < frame[h // 2, vw - vw // 4].mean()
+
+    # A landmark at x = 0.1 is drawn where the mirrored hand is: near the right.
+    accent = np.array(calibrate.ACCENT, dtype=np.uint8)
+    ys, xs = np.nonzero(np.all(frame[:, :vw] == accent, axis=2))
+    assert xs.size > 50, "the fingertip ring was not drawn"
+    assert xs.mean() > vw * 0.6, f"ring at x={xs.mean():.0f} of {vw}: not mirrored"
+    assert abs(ys.mean() - h / 2) < 12, "the ring is not on the landmark's row"
 
 
 def test_the_wizard_runs_headless_and_writes_a_profile(tmp_path):

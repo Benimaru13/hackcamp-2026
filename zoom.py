@@ -21,6 +21,9 @@ Two jobs, two entry points:
   * `view_rect()`   -- show. The window for the preview: the follower crop, blown
                       up to the preview window, so the feed on screen visibly zooms
                       and pans with the hand like a camera.
+  * `ViewFollow`    -- ease. The camera move for the preview: zoom in from the
+                      whole frame, glide with the hand, ease back out when it is
+                      lost, so the window never snaps to a new position.
   * `scan_tiles()` -- acquire. While nothing is tracked there is no hand to crop
                       around, so the frame is cut into overlapping tiles and one
                       tile is tried per frame: a tile is upscaled much harder than
@@ -198,6 +201,90 @@ def view_rect(center, side, frame_w, frame_h):
     x0 = min(max(float(cx) - vw / 2.0, 0.0), frame_w - vw)
     y0 = min(max(float(cy) - vh / 2.0, 0.0), frame_h - vh)
     return Rect(x0, y0, x0 + vw, y0 + vh)
+
+
+MAX_STEP = 0.10         # s: a stalled frame must not teleport the preview
+
+
+def solve_view(current, target, velocity, smooth_time, dt):
+    """One step of a critically damped follower, for one axis.
+
+    A per-frame lerp starts at full speed and stops dead, and it moves twice as
+    fast on a 60 fps camera as on a 30 fps one; that is what made the preview read
+    as a snap. A critically damped spring eases in, eases out, never overshoots,
+    and is integrated in real time (smooth damp), so the same pan takes the same
+    fraction of a second whatever the frame rate. `velocity` is carried between
+    calls. Returns (value, velocity).
+    """
+    smooth_time = max(float(smooth_time), 1e-4)
+    dt = max(min(float(dt), MAX_STEP), 0.0)
+    omega = 2.0 / smooth_time
+    x = omega * dt
+    decay = 1.0 / (1.0 + x + 0.48 * x * x + 0.235 * x * x * x)
+    change = float(current) - float(target)
+    temp = (float(velocity) + omega * change) * dt
+    return float(target) + (change + temp) * decay, (float(velocity) - omega * temp) * decay
+
+
+class ViewFollow:
+    """Camera-style easing for the preview window: the macOS Centre Stage feel.
+
+    Cutting to the hand the moment it is found -- and cutting back to the whole
+    frame the moment it is lost -- reads as a glitch. A camera does neither: it
+    zooms in from where it already was, glides when the subject moves, and eases
+    back out when the subject leaves. This is that camera.
+
+    Feed it the crop the detector is focused on (`None` when it has none) and the
+    frame time; it returns the window to show as (cx, cy, side) for `view_rect()`,
+    or None meaning "the whole frame". A scan-tile detection is deliberately not a
+    target (see tracker.Frame.focus_crop): a tile is not a crop around the hand, so
+    following one whipped the preview across the frame before settling.
+    """
+
+    def __init__(self, pan_time=0.30, zoom_time=0.40, release_time=0.24,
+                 settle_px=1.0):
+        self.pan_time = pan_time          # s: one pan to a new hand
+        self.zoom_time = zoom_time        # s: zoom is slower than a pan, like a lens
+        self.release_time = release_time  # s: pull back out when the hand is lost
+        self.settle_px = settle_px        # this close to the whole frame = done
+        self.state = None                 # (cx, cy, side) currently on screen
+        self.velocity = (0.0, 0.0, 0.0)
+
+    def reset(self):
+        self.state = None
+        self.velocity = (0.0, 0.0, 0.0)
+
+    def update(self, crop, frame_w, frame_h, dt):
+        """crop: a Rect-like with .center/.side, or None for "no crop"."""
+        whole = max(float(frame_h), 1.0)      # side at which the frame shows whole
+        if crop is None:
+            if self.state is None:
+                return None
+            target = (self.state[0], self.state[1], whole)
+            lost = True
+        else:
+            cx, cy = crop.center
+            target = (min(max(float(cx), 0.0), max(float(frame_w), 1.0)),
+                      min(max(float(cy), 0.0), whole),
+                      min(max(float(crop.side), 1.0), whole))
+            lost = False
+            if self.state is None:
+                # Start from the whole frame, centred on the hand: the first move
+                # is a zoom around your hand, never a cut and never a whip-pan.
+                self.state = (target[0], target[1], whole)
+                self.velocity = (0.0, 0.0, 0.0)
+                return self.state     # frame one is the whole frame, unchanged
+        x, vx = solve_view(self.state[0], target[0], self.velocity[0],
+                           self.pan_time, dt)
+        y, vy = solve_view(self.state[1], target[1], self.velocity[1],
+                           self.pan_time, dt)
+        side, vs = solve_view(self.state[2], target[2], self.velocity[2],
+                              self.release_time if lost else self.zoom_time, dt)
+        self.state, self.velocity = (x, y, side), (vx, vy, vs)
+        if lost and side >= whole - self.settle_px:
+            self.reset()
+            return None
+        return self.state
 
 
 def scan_tiles(frame_w, frame_h, cols=2, rows=2, overlap=0.25):

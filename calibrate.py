@@ -148,6 +148,13 @@ def render(image, step, progress, hint, chips=None, landmarks=None, mirror=True)
 
     if image is not None:
         fitted, x0, y0, k = _fit(image, vw, h)
+        if mirror:
+            # The dots below are mirrored (x -> 1 - x), because the preview reads
+            # like a mirror, the same convention as the tracker's window. The
+            # picture has to be flipped WITH them: flipping only the dots put every
+            # landmark on the wrong side of the frame, so the fingertip ring sat on
+            # the empty half of the image while the real hand had no dots on it.
+            fitted = cv2.flip(fitted, 1)
         canvas[:, :vw] = (fitted * 0.86).astype(np.uint8)
         src_h, src_w = image.shape[:2]
         if landmarks:
@@ -338,8 +345,11 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                     dist = estimate_distance_cm(last_lm, width, cfg) / 30.48
                     if dist > 0:
                         chips["distance"] = f"{dist:.1f} ft"
+                # Draw THIS frame's landmarks, not the last ones that happened to
+                # be detected: at 3 m a frame or two is missed regularly, and
+                # stale dots stay on the image while your hand keeps moving.
                 cv2.imshow(WIN, render(last_image, step_index[phase], progress,
-                                       hint, chips, last_lm))
+                                       hint, chips, lm if has_hand else None))
                 if (cv2.waitKey(1) & 0xFF) in (27, ord("q")):
                     print("Cancelled.")
                     src.close()

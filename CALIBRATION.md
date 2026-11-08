@@ -32,6 +32,21 @@ and handed to the tracker, so nothing reopens a webcam at the moment the cursor
 is supposed to appear. Measured end to end: **~4.1 s** (0.6 s arm + 3.5 s
 measuring) from launch to controlling, against ~10 s before.
 
+## The look
+
+- **The measurement window is a mirror**, the same convention as the tracker's
+  preview: the picture is flipped *and* the landmark dots are mapped with it. The
+  dots used to be flipped on their own, which put every landmark on the wrong
+  side of the frame — the fingertip ring sat on the empty half of the image while
+  the real hand had no dots on it at all.
+- **The tracker's preview eases to the hand** (`ViewFollow` in `zoom.py`) instead
+  of cutting to the detected box: it zooms in from the whole frame, glides when
+  the hand moves, and eases back out when the hand is lost — the Centre Stage
+  feel. The easing runs on real time, so a 15 fps camera pans at the same speed as
+  a 60 fps one and a dropped frame cannot teleport the picture. Only a crop built
+  around the hand is followed; a scan tile is not, or the window whipped across
+  the frame before settling. See it without a camera: `python simulate.py follow`.
+
 ## What the numbers do
 
 - **tremor_hz / tremor_px** — the dominant periodic component of a still hand,
