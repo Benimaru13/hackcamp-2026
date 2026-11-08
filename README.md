@@ -212,7 +212,7 @@ Three separate problems, solved separately:
 
 1. **The hand is tiny at 10 ft.** The detector resizes its input to a fixed size,
    so what decides whether a hand is findable is how much of that input it fills:
-   about **13% at 3 m** in a whole 720p frame, against **40% at 1 m**. The same
+   about **10% at 3 m** in a whole 720p frame, against **30% at 1 m**. The same
    gesture gets harder the further you stand. `tracker.py` therefore **auto-zooms**:
    `zoom.py` plans a square crop just big enough to hold the hand, the crop is
    upscaled and *that* is what the model gets, so the hand fills the same ~55% of
@@ -223,7 +223,7 @@ Three separate problems, solved separately:
    gets acquired in the first place; the whole frame stays as the last resort.
    Landmarks are mapped back to full-frame coordinates, so the mirrored preview and
    the cursor mapping behave exactly as before. `python simulate.py focus` prints
-   the numbers, and the HUD shows `zoom: 2.9x  hand 55% of crop` next to the crop
+   the numbers, and the HUD shows `zoom: 3.9x  hand 55% of crop` next to the crop
    rectangle -- literally what the model is looking at.
 2. **Distance changes sensitivity.** Every position and threshold is converted to
    **palm-lengths** (wrist → middle knuckle, ~9 cm). The same 15 cm hand sweep
