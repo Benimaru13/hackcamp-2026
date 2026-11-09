@@ -516,6 +516,9 @@ class ScrollDetector:
         if now < self._next:
             return 0
         self._next = now + self.interval
+        # One wheel NOTCH per tick, not two: the cadence (interval) sets the speed,
+        # so the step size stays 1 and app.py multiplies it by SCROLL_STEP. Returning
+        # 2 here silently doubled the scroll rate and broke the cadence tests.
         return 1 if way == "up" else -1
 
 

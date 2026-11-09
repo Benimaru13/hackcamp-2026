@@ -1,12 +1,22 @@
-"""AirTrack DeepSpace Core Integration Module.
+"""ds_intg.py -- LEGACY: the fake "DeepSpace cloud" layer behind deepspace_app.py.
 
-Manages secure authentication, preference syncing, and live calibration telemetry.
+Nothing here touches a network. `authenticated = True` is a constant, the
+"preferences" are whatever defaults are handed in, and every "sync" is a print.
+It is kept as a record of the experiment (see deepspace_app.py) and is not
+imported by app.py, start.py, app_calibrated.py or any test.
+
+If this ever becomes real, the parts to replace are `fetch_cloud_profile` (return
+a stored profile, e.g. via calibrate_profile.load_profile) and
+`save_calibration_profile` (write one); the emulate-the-dashboard printing should
+be deleted rather than extended.
 """
 import math
 import time
 
-# --- OFFICIAL DEEPSPACE SDK CORE INTERACTION ---
-# Bypasses local file storage to pipe parameters natively into active dashboard states
+# --- Simulated platform layer --------------------------------------------------
+# These methods describe the shape a real client would have (load preferences,
+# push a calibration) while doing nothing remote: the values come straight back
+# out of the arguments. Do not read the returns below as confirmation of a sync.
 class DeepSpaceAppSpace:
     def __init__(self):
         self.authenticated = True

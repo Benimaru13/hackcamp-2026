@@ -4,11 +4,12 @@
     python calibrate.py --no-preview  # terminal only
     python calibrate.py --simulate    # no camera: synthetic hand (rehearse/test)
 
-Three measurements, and nothing to press: the wizard advances on its own timers,
-so you can stand back and keep your hands in the air for the whole thing.
+Two timed measurements and one acknowledgement. The timed steps advance on their
+own, so you can stand back and keep your hand in the air for the whole thing:
 
-    1. raise an open palm      -- is the camera seeing a hand at all?
+    1. raise an open palm      -- is the camera seeing a hand at all?  (0.6 s)
     2. hold still, pointing    -- 3.5 s: how much you shake, and your hand size
+    3. press CONFIRM on the card -- the only thing you touch (see render_done)
 
 The shake and the hand size are caught in the same window on purpose. Two
 separate four-second holds added four seconds of dead time between launching the
@@ -22,7 +23,7 @@ computer when it finishes, keeping the measurement in memory so no file has to
 exist for the calibrated run to be the real one.
 
 The screen keeps the reading of the web mock: near-black canvas, one teal accent,
-a status panel listing the three steps with a single large instruction, and a
+a status panel listing the two steps with a single large instruction, and a
 countdown ring on your fingertip.
 """
 from __future__ import annotations
@@ -282,28 +283,39 @@ def run_calibration(camera=0, model=None, simulate=False, out_path=DEFAULT_PATH,
                 last_lm = lm
 
             if phase == "arm":
+                # Step 1: hold an open palm for ARM_SECONDS. Nothing is measured here;
+                # this only proves a hand is visible and steady enough to measure, which
+                # is why it can be this short.
                 if has_hand and is_arm_pose(lm):
                     if arm_since is None:
                         arm_since = now
+                    progress = min((now - arm_since) / ARM_SECONDS, 1.0)
                 else:
                     arm_since = None
-                progress = (0.0 if arm_since is None
-                            else min((now - arm_since) / ARM_SECONDS, 1.0))
+                    progress = 0.0
                 hint = "Raise an open palm toward the camera. Stand about 3 m back."
                 if progress >= 1.0:
                     phase, phase_start = "measure", now
                     meter.reset()
                     print("[1/2] hand found")
             else:
-                # One window does both jobs: the fingertip gives the tremor, the
-                # wrist-to-knuckle span gives the distance. Nothing is asked of
-                # the user beyond holding still, which is the point.
+                # Step 2: hold still and point. One window yields both numbers -- the
+                # fingertip's motion is the tremor, the wrist-to-knuckle span is the hand
+                # size -- so asking twice would only add seconds of waiting.
                 if has_hand:
                     sx, sy = lm[8].x * width, lm[8].y * height
                     meter.push(sx, sy)
                     samples.append((now, sx, sy))
                     palms.append(hand_scale(lm))
-                progress = min((now - phase_start) / MEASURE_SECONDS, 1.0)
+                    progress = min((now - phase_start) / MEASURE_SECONDS, 1.0)
+                else:
+                    # A lost hand restarts the window instead of shortening it: a
+                    # measurement taken across a gap would mix two distances together.
+                    phase_start = now
+                    progress = 0.0
+                    meter.reset()
+                    samples.clear()
+                    palms.clear()
                 hint = "Hold still and keep pointing - measuring your hand."
                 if progress >= 1.0:
                     break

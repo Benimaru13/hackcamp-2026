@@ -2,8 +2,9 @@
 
 One person measured at one distance: how much their hand shakes, at what
 frequency, how big their hand looks from there, and the tuning all of that
-implies. The keys are the tracker's own Config field names, so applying it is a
-three-line addition to app.py -- a file this branch deliberately does not modify.
+implies. The keys are the tracker's own Config field names, so applying it is three lines at
+startup -- app_calibrated.py does exactly that, from memory (a measurement taken
+this run) or from disk (--use-saved).
 
 Plain JSON so a teammate can copy it, and every number is clamped on load: a
 hand-edited or stale file must never be able to make the cursor unusable. A
@@ -71,7 +72,14 @@ class Profile:
         return cls(
             name=name or f"Calibrated {time.strftime('%H:%M')}",
             jitter_px=round(max(0.0, min(float(jitter_px), 40.0)), 2),
-            jitter_score=jitter_score(tremor.rms_px or jitter_px),
+            # Score the number the card prints beside it. `tremor.rms_px` is the
+            # fingertip's spread around its own mean over the whole hold, so it also
+            # counts the arm drifting/leaning across 3.5 s -- several px at 3 m with
+            # a perfectly motionless hand. Scoring that made a 0.9 px reading show as
+            # 30/100. `jitter_px` is the meter's frame-to-frame RMS: the same value
+            # the live chip shows while measuring and the same scale `jitter_score`
+            # was tuned for.
+            jitter_score=jitter_score(jitter_px),
             palm=float(palm),
             distance_ft=round(float(distance_ft), 1),
             tremor_hz=float(tremor.freq_hz),

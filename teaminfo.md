@@ -97,3 +97,27 @@ libraries = PyAutoGUI
 MediaPipe for hand landmarks; Google provides a Python hand-tracking guide. (MediaPipe Python guide)
 PyAutoGUI for basic cursor movement and clicking. It supports macOS and Windows, which helps. (PyAutoGUI docs)
 PySide6 if you need a desktop window for the status and controls. It’s Qt’s official Python binding and has VS Code guidance. (PySide6 quick start)
+
+---
+
+## Where this stands now
+
+This note is the original planning record; the headings above are kept as written.
+These are the decisions that have since been made in code on `main`:
+
+| Open question (above) | What shipped |
+| --- | --- |
+| Final project name | **AirTrack** |
+| Activation gesture | Raised **open palm** (all four fingers up, hand held up ~0.55 s). The heart pose, "O" ring and thumbs-up were tried and rejected: thumb-based geometry collapses past ~2 m in dim light. |
+| Click / selection | **Dwell only** — the pointing hand held still for 2 s. Pinch identifies a pose but never clicks, so no other gesture can fire one by accident. |
+| Pause / stop | Fist held 0.35 s, Esc/`q`, Ctrl-C, or PyAutoGUI's corner failsafe; a lost hand releases control after 1.2 s. |
+| Armed indicator | Borderless click-through border around every screen (PyObjC/AppKit), amber pulsing for ARMED and solid green for ACTIVE, plus the live HUD in the preview. |
+| Demo controls | Cursor, dwell click, two-finger scroll, two-finger left/right screen switch (ctrl+←/→). Media keys remain future work. |
+| Real desktop vs simulated | The **real macOS/Windows desktop**, via PyAutoGUI, with `--dry-run` and `simulate.py` for everything else. |
+| CV library / app approach | MediaPipe Tasks `HandLandmarker` + OpenCV. **No Qt/PySide6** — the HUD is pure OpenCV drawing; the only native UI is the AppKit halo. |
+| Privacy | Local-first and now explicit: frames stay in memory, nothing is recorded or transmitted; the only network call is the one-time 7.8 MB model download. |
+| Reliability target | Still open in numbers: the 1 m vs 3 m equivalence and zero-drift claims are measured on synthetic landmarks, but a real person at 10 ft has not been recorded yet. |
+
+See `README.md` for the shipped behaviour and `CALIBRATION.md` for the measurement
+path. The instruction manual that walks a new user through the gestures is on the
+`airtrack-desktop` feature branch, not in `main`.

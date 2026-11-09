@@ -1,8 +1,8 @@
 """calibration_math.py -- what the calibrator measures, and the tuning it derives.
 
 Deliberately standalone: no cv2, no camera, no OS calls, and no imports from
-gesture_cursor.py or app.py. The AirTrack pipeline belongs to the other branches;
-this module only produces numbers it can consume.
+gesture_cursor.py or app.py. It only produces plain numbers, so the measurement
+can be unit tested anywhere and calibrate_profile.py can decide what they mean.
 
 The measurement is aimed at tremor, not generic noise. A shaky hand is not white
 noise: it has one dominant periodic component, usually between 3 and 8 Hz. Finding
@@ -58,7 +58,13 @@ class JitterMeter:
 
 
 def jitter_score(rms_px):
-    """0-100, 100 = rock steady (1 px ~ 85, 2.5 px ~ 66, 6 px ~ 37)."""
+    """0-100, 100 = rock steady (1 px ~ 85, 2.5 px ~ 66, 6 px ~ 37).
+
+    Calibrated for `JitterMeter.rms` -- frame-to-frame motion, which ignores a hand
+    drifting steadily across the frame. Do NOT feed it `TremorProfile.rms_px`: that
+    is spread around the mean over the whole hold and counts slow drift, so the same
+    still hand scores ~30 instead of ~86.
+    """
     return int(round(max(0.0, min(100.0, 100.0 * math.exp(-max(rms_px, 0.0) / 6.0)))))
 
 
@@ -68,14 +74,18 @@ class TremorProfile:
 
     freq_hz: float = 0.0        # 0 = nothing periodic found
     amplitude_px: float = 0.0   # peak amplitude of that component
-    rms_px: float = 0.0         # overall shake, for the score
-    score: int = 100
+    rms_px: float = 0.0         # overall movement, drift included (see score below)
+    score: int = 100             # from rms_px, so drift-inclusive: informational only, the
+    #                              card's score comes from JitterMeter (see calibrate_profile)
 
     def describe(self):
+        """One terminal line. No score here on purpose: `rms_px` includes slow arm
+        drift, so a score from it disagrees with the card's (which comes from the
+        meter). The card and `Profile.summary()` are the one place a score is shown.
+        """
         if self.freq_hz <= 0:
-            return f"{self.rms_px:.1f} px shake, steady ({self.score}/100)"
-        return (f"{self.freq_hz:.1f} Hz tremor, {self.amplitude_px:.1f} px "
-                f"({self.score}/100)")
+            return f"{self.rms_px:.1f} px of movement, nothing periodic"
+        return f"{self.freq_hz:.1f} Hz tremor, {self.amplitude_px:.1f} px"
 
 
 def estimate_tremor(samples, min_hz=2.0, max_hz=12.0, step_hz=0.25):
