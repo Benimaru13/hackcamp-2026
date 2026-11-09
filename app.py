@@ -348,7 +348,9 @@ def main(argv=None):
             current_time = time.monotonic()
 
             if glow is not None:
-                glow.update(out.state.value, current_time)
+                # The halo carries the audio-guide badge too: it is the one cue
+                # that survives another app being in front of the preview.
+                glow.update(out.state.value, current_time, audio=voice.enabled)
 
             # Two-finger vertical: hold the V pointing up/down to scroll. The
             # detector emits at a fixed cadence (per second, not per frame) and

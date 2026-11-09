@@ -156,5 +156,16 @@ class VoiceToggleTests(unittest.TestCase):
             self.assertEqual(v.available(), ["activated"])
 
 
+class HaloBadgeTests(unittest.TestCase):
+    def test_halo_accepts_the_audio_state_without_opening_a_window(self):
+        from edge_glow import EdgeGlow
+        glow = EdgeGlow(enabled=False)
+        self.assertFalse(glow.available)
+        glow.update("armed", 0.0)                  # audio stays optional
+        glow.update("active", 0.0, audio=False)    # the badge path must not raise
+        glow.update("off", 0.0, audio=True)
+        glow.close()
+
+
 if __name__ == "__main__":
     unittest.main()
