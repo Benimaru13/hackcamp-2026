@@ -33,6 +33,7 @@ _FINGERS = {
 # which fingers are extended per pose
 _EXTENDED = {
     "point": {"index"},
+    "rock": {"index", "pinky"},
     "two": {"index", "middle"},
     "palm": {"index", "middle", "ring", "pinky"},
     "pinch": {"index"},

@@ -92,6 +92,23 @@ class Voice:
         except Exception:
             return False
 
+    def set_enabled(self, on: bool) -> bool:
+        """Mute or unmute from a gesture; returns the new state.
+
+        Muting also stops whatever is playing right now, so a cue cannot outlive
+        the gesture that silenced it. Never raises, same as say().
+        """
+        self.enabled = bool(on)
+        if not self.enabled:
+            self._stop()
+            if sys.platform == "win32":
+                try:
+                    import winsound
+                    winsound.PlaySound(None, 0)
+                except Exception:
+                    pass
+        return self.enabled
+
     def _stop(self):
         if self._proc is not None and self._proc.poll() is None:
             try:

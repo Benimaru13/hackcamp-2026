@@ -25,8 +25,8 @@ import time
 import cv2
 import numpy as np
 
-from gesture_cursor import (Config, ControlState, CursorController, ScrollDetector,
-                            SwitchDetector, cursor_radius_px)
+from gesture_cursor import (Config, ControlState, CursorController, MuteDetector,
+                            ScrollDetector, SwitchDetector, cursor_radius_px)
 from voice import Voice
 from zoom import view_rect
 
@@ -63,6 +63,13 @@ def _pill(frame, text, org, color, scale=0.62, thick=2):
     cv2.rectangle(frame, (x - 8, y - th - 8), (x + tw + 8, y + base + 4),
                   color, 1, cv2.LINE_AA)
     cv2.putText(frame, text, (x, y), font, scale, color, thick, cv2.LINE_AA)
+
+
+def _pill_right(frame, text, y, color, scale=0.55, thick=2):
+    """_pill anchored to the right edge: the audio-guide indicator lives there."""
+    font = cv2.FONT_HERSHEY_DUPLEX
+    (tw, _), _ = cv2.getTextSize(text, font, scale, thick)
+    _pill(frame, text, (frame.shape[1] - tw - 28, y), color, scale, thick)
 
 
 def _arc(img, center, radius, fraction, color, thickness=3):
@@ -171,11 +178,24 @@ def draw_hud(frame, out, fr, extra, mirror=True, halo=True):
             a, b = fr.landmarks[8], fr.landmarks[12]
             _arc(frame, (X((a.x + b.x) / 2.0), Y((a.y + b.y) / 2.0)), 22,
                  switch_progress, (0, 220, 255), 3)
+        # Audio-guide hold: the same progress idea for the rock sign, drawn
+        # between the two raised fingertips so a half-done hold is visible.
+        mute_progress = float(extra.get("mute", 0.0))
+        if mute_progress > 0.0:
+            a, b = fr.landmarks[8], fr.landmarks[20]
+            _arc(frame, (X((a.x + b.x) / 2.0), Y((a.y + b.y) / 2.0)), 26,
+                 mute_progress, (0, 220, 255), 3)
 
     label = {"armed": "ARMED  (watching)", "active": "ACTIVE  (controlling)",
              "off": "OFF"}[out.state.value]
     _pill(frame, label, (28, 44), COLORS[out.state], scale=0.8)
     _pill(frame, out.hint, (28, 84), (230, 230, 230), scale=0.55, thick=1)
+    # Audio-guide indicator: whether the app will talk to you is a state you have
+    # to be able to check from across the room, so it is always on screen --
+    # green for ACTIVE, amber for MUTED.
+    audio_on = bool(extra.get("audio", True))
+    _pill_right(frame, "AUDIO GUIDE ACTIVE" if audio_on else "AUDIO GUIDE MUTED",
+                44, (90, 255, 120) if audio_on else (0, 176, 255))
 
     info = [f"pose: {out.pose or '-'}",
             f"hand: {out.distance_cm / 30.48:.1f} ft / {out.distance_cm:.0f} cm"
@@ -280,6 +300,8 @@ def main(argv=None):
     print("Click: hold the pointing hand still for ~2 s (pointing pose only).")
     print("Switch space: point two fingers left or right, hold 0.55 s (ACTIVE "
           "only), then a 1 s rest before it looks for input again.")
+    print("Audio guide: the rock sign (index + pinky up, middle fingers curled) "
+          "held 0.75 s mutes / unmutes the spoken cues (ARMED too).")
     print("Auto-zoom: on -- the crop follows the hand, like a camera focusing on it,"
           " so the hand fills the model's input at any distance."
           if tracker.zoom else "Auto-zoom: off (--no-zoom), whole-frame detection only.")
@@ -300,6 +322,7 @@ def main(argv=None):
     t_start = time.monotonic()
     switch_det = SwitchDetector(cfg.switch_hold, cfg.switch_cooldown)
     scroll_det = ScrollDetector(cfg.scroll_hold, cfg.scroll_interval)
+    mute_det = MuteDetector(cfg.mute_hold, cfg.mute_release)
     scroll_dir = None
     reticle = None                 # smoothed aiming-reticle radius
     view = None                    # smoothed (cx, cy, side) of the preview zoom
@@ -362,6 +385,19 @@ def main(argv=None):
                 if pyautogui is not None and not args.dry_run:
                     pyautogui.hotkey("ctrl", switch)
             switch_progress = switch_det.progress(current_time)
+            # Audio guide: the rock sign held 0.75 s toggles the spoken cues. It
+            # runs in ARMED too, because the cues fire the moment control is taken
+            # -- muting has to be possible before that. One hold is one toggle;
+            # letting go of the sign is what arms the next one.
+            if out.state is not ControlState.OFF:
+                if mute_det.update(fr.landmarks, current_time):
+                    voice.set_enabled(not voice.enabled)
+                    print(f"[{current_time - t_start:6.1f}s] ROCK SIGN -> "
+                          f"audio guide "
+                          f"{'ACTIVE' if voice.enabled else 'MUTED'}")
+            else:
+                mute_det.reset()
+            mute_progress = mute_det.progress(current_time)
             if out.state is not state:
                 was_active = state is ControlState.ACTIVE
                 state = out.state
@@ -428,6 +464,8 @@ def main(argv=None):
                 frame = draw_hud(fr.image, out, fr, {
                     "speed": cfg.speed, "min_speed": cfg.min_speed,
                     "switch": switch_progress,
+                    "mute": mute_progress,
+                    "audio": voice.enabled,
                     "view": view,
                     "scroll": scroll_det.direction or "-",
                     "cursor_px": cursor_px,

@@ -113,6 +113,7 @@ def _gestures(cfg):
     dwell = getattr(cfg, "dwell_time", 2.0)
     switch = getattr(cfg, "switch_hold", getattr(cfg, "swipe_hold", 0.55))
     stop = getattr(cfg, "stop_hold", 0.35)
+    mute = getattr(cfg, "mute_hold", 0.75)
     return (
         ("1", "Open palm", f"hold {arm:.1f} s", "take control"),
         ("2", "Point", "", "move the cursor"),
@@ -120,6 +121,7 @@ def _gestures(cfg):
         ("4", "Two fingers up/down", "hold", "scroll"),
         ("5", "Two fingers left/right", f"hold {switch:.1f} s", "switch space"),
         ("6", "Fist", f"hold {stop:.2f} s", "release"),
+        ("7", "Rock sign", f"hold {mute:.2f} s", "audio guide on/off"),
     )
 
 
@@ -162,7 +164,8 @@ def draw_instruction_panel(frame, profile=None, cfg=None, alpha=1.0,
         ("3", "Point, still", "hold 2.0 s", "one click"),
         ("4", "Two fingers up/down", "hold", "scroll"),
         ("5", "Two fingers left/right", "hold 0.6 s", "switch space"),
-        ("6", "Fist", "hold 0.35 s", "release"))
+        ("6", "Fist", "hold 0.35 s", "release"),
+        ("7", "Rock sign", "hold 0.75 s", "audio guide on/off"))
     lay = _layout(out.shape, corner, len(states), len(gestures), s)
 
     out = frosted(out, lay["box"], radius=int(16 * s),
@@ -329,7 +332,8 @@ def draw_manual(frame, profile=None, cfg=None, hover=False, progress=0.0):
         ("3", "Point, still", "hold 2.0 s", "one click"),
         ("4", "Two fingers up/down", "hold", "scroll"),
         ("5", "Two fingers left/right", "hold 0.6 s", "switch space"),
-        ("6", "Fist", "hold 0.35 s", "release"))
+        ("6", "Fist", "hold 0.35 s", "release"),
+        ("7", "Rock sign", "hold 0.75 s", "audio guide on/off"))
 
     pad = int(30 * s)
     title_h = int(78 * s)

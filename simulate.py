@@ -11,7 +11,7 @@ matter for the 10-foot demo:
 
 Run:  python simulate.py            (all scenarios)
       python simulate.py still      (one scenario: still | move | tune | gestures |
-                                     switch | scroll | focus | follow | cursor)
+                                     switch | scroll | mute | focus | follow | cursor)
 """
 from __future__ import annotations
 
@@ -167,6 +167,22 @@ def scenario_switch(distance_m=3.0, seconds=3.0):
     return rows
 
 
+def scenario_mute(distance_m=3.0, seconds=2.0):
+    """Audio guide: the rock sign held, one toggle at 0.75 s and no repeat while
+    the sign stays up (holding it must not flip the setting back and forth)."""
+    from gesture_cursor import MuteDetector
+    cfg = Config()
+    det = MuteDetector(cfg.mute_hold, cfg.mute_release)
+    hand = FakeHand(pose="rock").at_distance(distance_m)
+    t = 0.0
+    fired = []
+    for _ in range(int(seconds / DT)):
+        t += DT
+        if det.update(hand.landmarks(), t):
+            fired.append(round(t, 2))
+    return fired
+
+
 def scenario_focus(frame_w=1280, frame_h=720):
     """Auto-zoom, camera-free: how much of the model's input does the hand fill
     with the new focus crop, versus a whole-frame scan and a scan tile? That share
@@ -309,6 +325,14 @@ def main(argv):
                 print(f"  two {way:<5}: {len(fired)} command(s) at {when}")
             else:
                 print(f"  two {way:<5}: never fired")
+        print()
+
+    if which in ("all", "mute"):
+        print("audio guide: rock sign held at 3 m for 2 s "
+              "(0.75 s hold, one toggle per hold)")
+        fired = scenario_mute()
+        when = ", ".join(f"{t:.2f}s" for t in fired) or "never"
+        print(f"  🤘 {len(fired)} toggle(s) at {when}")
         print()
 
     if which in ("all", "focus"):

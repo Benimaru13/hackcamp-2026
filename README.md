@@ -18,7 +18,7 @@ python app.py       # skip calibration and run the tracker on the built-in defau
 | Branch | Role |
 | --- | --- |
 | `main` | **What ships.** Everything this README documents: tracker + auto-zoom preview, the calibration wizard, the Calibrated/CONFIRM card, and the calibrated control loop. |
-| `airtrack-desktop` | Feature development. Currently adds the instruction manual (`instruction_panel.py`) that teaches the gestures before control starts, plus startup/latency work. **Not part of `main`.** |
+| `airtrack-desktop` | Feature development. Currently adds the instruction manual (`instruction_panel.py`) that teaches the gestures before control starts, plus startup/latency work, and the rock-sign audio-guide toggle (index + pinky up, middle fingers curled, held 0.75 s; the HUD shows `AUDIO GUIDE ACTIVE` / `AUDIO GUIDE MUTED` in its corner). **Not part of `main`.** |
 
 Keep this README describing `main`. If a feature only exists on
 `airtrack-desktop`, say so in the branch table instead of documenting it as

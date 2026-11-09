@@ -105,6 +105,12 @@ class Config:
     switch_hold: float = 0.55     # hold the sideways V this long for one command
     switch_cooldown: float = 1.0  # then rest this long before input counts again
 
+    # --- audio guide toggle: the rock sign --------------------------------
+    # Index and pinky up, middle and ring curled, held. One hold = one toggle,
+    # so the sign has to be dropped before it can toggle the cues again.
+    mute_hold: float = 0.75       # hold the rock sign this long to toggle the cues
+    mute_release: float = 0.15    # sign gone this long = let go, next hold counts
+
     # --- misc ------------------------------------------------------------
     palm_cm: float = 9.0         # assumed palm length, only for the distance readout
     hfov_deg: float = 60.0       # assumed horizontal FOV, only for the readout
@@ -231,6 +237,26 @@ def two_finger_direction(lm):
     return "right" if dx < 0 else "left"
 
 
+def is_rock_sign(lm):
+    """"Rock on": index and pinky extended, middle and ring curled.
+
+    The audio-guide toggle. It shares the extended index with the point pose, but
+    the raised pinky is the difference, so pointing can never mute the cues. The
+    two curled middle fingers are what keep it out of the two-finger V, which is
+    already the scroll and the screen switch -- so one pose per job, and a hand
+    held sideways or up can never toggle the audio by accident. The curls are as
+    forgiving as the other pose tests, because folded fingers foreshorten with
+    distance and read as extended (the bug that used to break scrolling down).
+    """
+    if lm is None:
+        return False
+    idx, mid, ring, pink = fingers_up(lm)
+    if not (idx and pink) or mid or ring:
+        return False
+    return (_curled(lm, MIDDLE_TIP, MIDDLE_PIP)
+            and _curled(lm, RING_TIP, RING_PIP))
+
+
 def thumb_direction(lm, reach=THUMB_SIDE_REACH):
     """Which way a thumb held straight out to one side points: "left", "right"
     or None. This is the screen-switch gesture.
@@ -304,7 +330,8 @@ def is_fist(lm):
 
 def classify_pose(lm):
     """Single label for the HUD. Precedence: side thumb, then the two-finger
-    screen switch, then fist (stop), pinch, palm (arm), point (move).
+    screen switch, the rock sign (audio guide), fist (stop), pinch, palm (arm),
+    point (move).
 
     The side thumb still comes before the fist even though the switch is now the
     two-finger point: a thumb held out is also a curled hand, and reading it as a
@@ -320,6 +347,8 @@ def classify_pose(lm):
     v = two_finger_direction(lm)
     if v in ("left", "right"):
         return "two_" + v
+    if is_rock_sign(lm):
+        return "rock"
     if is_fist(lm):
         return "fist"
     if pinch_gap(lm) < PINCH_RATIO:
@@ -467,6 +496,58 @@ class SwitchDetector:
         self._ready_at = now + self.cooldown
         self.reset()
         return way
+
+
+class MuteDetector:
+    """Audio guide toggle: the rock sign held `hold` seconds, one toggle per hold.
+
+    A toggle must not repeat. Firing while the sign keeps being held would flip
+    the setting back and forth on every hold, so the detector fires once and then
+    waits for the hand to drop the sign for `release` seconds before it can fire
+    again. A blink at 3 m does not count as dropping it -- the same hysteresis
+    every other hold here uses -- so a flickering pinky cannot re-arm the gesture
+    in the middle of one hold.
+    """
+
+    def __init__(self, hold=0.75, release=0.15):
+        self.hold, self.release = hold, release
+        self._since = None        # start of the hold in progress
+        self._seen = -1e9         # last frame the sign was present
+        self._armed = True        # False until the sign has been let go
+        self._visible = False     # sign present this frame, for progress()
+
+    def reset(self):
+        self._since = None
+        self._armed = True
+        self._visible = False
+
+    def progress(self, now):
+        """0..1 of the hold in progress, for the HUD."""
+        if not self._visible or self._since is None or self.hold <= 0:
+            return 0.0
+        return min(max((now - self._since) / self.hold, 0.0), 1.0)
+
+    def update(self, lm, now):
+        """True on the frame the hold completes, else False."""
+        self._visible = is_rock_sign(lm)
+        if self._visible:
+            self._seen = now
+            if not self._armed:
+                return False           # still holding: one toggle per hold
+            if self._since is None:
+                self._since = now
+            if now - self._since < self.hold:
+                return False
+            # Fired. Letting go of the sign is what arms the next toggle.
+            self._since = None
+            self._armed = False
+            return True
+        if self._since is not None and now - self._seen < self.release:
+            return False               # a blink, not a release: keep the hold
+        self._since = None
+        if now - self._seen >= self.release:
+            self._armed = True
+        return False
 
 
 class ScrollDetector:
