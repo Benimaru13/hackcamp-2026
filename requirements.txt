@@ -1,6 +1,6 @@
 opencv-python==5.0.0.93
 mediapipe==1.2.2
-numpy==2.5.4
+numpy==2.0.2
 pyautogui==0.9.54
 # full-screen halo (edge_glow.py) is macOS-only; the app runs without it
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"

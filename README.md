@@ -172,6 +172,21 @@ application on the first run.
 
 **Windows** needs no permissions for the cursor; only a free camera.
 
+### Packaged macOS app (testers)
+
+For family and friends who should not install Python, `packaging/` builds a
+self-contained `AirTrack.app` with the hand model and sounds inside it:
+
+```bash
+packaging/build_macos.sh     # -> dist/AirTrack.app + dist/AirTrack-*-macos-arm64.zip
+```
+
+The build is Apple Silicon only for now (it is produced on the machine it runs
+on), and it is unsigned, so testers open it with right-click → Open. First-run
+permissions and the feedback checklist are in `packaging/TESTER_GUIDE.md`;
+build details and limitations are in `packaging/README.md`. Nothing here changes
+the source path above.
+
 ### Safe ways to try it
 
 ```bash

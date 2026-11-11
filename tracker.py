@@ -35,16 +35,42 @@ import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
 
+import resources
 from zoom import (DEADBAND, FILL, Rect, hand_fill, plan_crop, scan_tiles)
 
 MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
              "hand_landmarker/float16/1/hand_landmarker.task")
-DEFAULT_MODEL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "models", "hand_landmarker.task")
+
+
+def default_model_path() -> str:
+    """Where the hand model should live on this install.
+
+    A packaged app ships the model inside the bundle, so there is no download and
+    no network needed at launch. A source checkout keeps the old behaviour: the
+    file sits in the git-ignored ``models/`` directory and is fetched once.
+
+    If a bundle somehow lacks the model, fall back to a writable per-user path
+    rather than trying to write into the read-only app bundle (which also fails
+    under macOS App Translocation, where a quarantined app runs from a random
+    read-only location).
+    """
+    bundled = resources.resource_path("models", "hand_landmarker.task")
+    if bundled.is_file() and bundled.stat().st_size > 1_000_000:
+        return str(bundled)
+    if resources.is_frozen():
+        return str(resources.user_data_dir() / "models" / "hand_landmarker.task")
+    return str(bundled)
+
+
+DEFAULT_MODEL = default_model_path()
 
 
 def ensure_model(path=DEFAULT_MODEL, url=MODEL_URL, quiet=False):
-    """Download the 7.8 MB hand landmarker once, if it is not there yet."""
+    """Download the 7.8 MB hand landmarker once, if it is not there yet.
+
+    In the packaged macOS app the model is already bundled and this returns
+    immediately. Kept for source checkouts and for `--model` overrides.
+    """
     if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
         return path
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
