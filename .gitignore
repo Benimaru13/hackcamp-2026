@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 models/
+
+# macOS packaging output (PyInstaller work dir, .app bundles, tester archives)
+build/
+dist/
 _app_run.log
 .env
 .env.*
@@ -11,4 +15,5 @@ _app_run.log
 profile.json
 
 airtrack-web/
+.DS_Store
 airtrack-backend/

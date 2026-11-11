@@ -19,8 +19,15 @@ import time
 from dataclasses import asdict, dataclass
 
 from calibration_math import TremorProfile, jitter_score, tune_from_tremor
+from resources import is_frozen, user_data_dir
 
-DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile.json")
+# In development the profile sits beside the source, as documented. A packaged
+# app must not write inside its own bundle (read-only, and relocated by macOS
+# Gatekeeper), so it uses Application Support instead.
+if is_frozen():
+    DEFAULT_PATH = os.path.join(user_data_dir(), "profile.json")
+else:
+    DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile.json")
 
 # field -> accepted range on load (anything outside is clamped, not trusted)
 _LIMITS = {

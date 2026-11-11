@@ -17,7 +17,11 @@ import sys
 import wave
 from pathlib import Path
 
-SOUND_DIR = Path(__file__).with_name("sounds")
+from resources import resource_path
+
+# In a source checkout this is <repo>/sounds; inside AirTrack.app it resolves to
+# the copy bundled with the app, so the cues survive packaging.
+SOUND_DIR = resource_path("sounds")
 PCM_RATE = 22050            # matches ElevenLabs output_format=pcm_22050
 
 
